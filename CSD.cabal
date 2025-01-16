@@ -1,0 +1,32 @@
+cabal-version:      3.0
+name:               CSD
+version:            0.1.0.0
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Gan Shen
+maintainer:         gan_shen@icloud.com
+build-type:         Simple
+
+common warnings
+    ghc-options: -Wall
+
+library
+    import:           warnings
+    default-language: GHC2021
+    hs-source-dirs:   src
+    exposed-modules:
+        Control.CSD
+    -- other-modules:
+    build-depends:
+        base  ^>=4.17.2.1,
+        async ^>=2.2.5,
+
+executable CSD-test
+    import:           warnings
+    default-language: GHC2021
+    hs-source-dirs:   app
+    main-is:          Main.hs
+    build-depends:
+        base ^>=4.17.2.1,
+        async ^>=2.2.5,
+        CSD
