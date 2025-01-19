@@ -83,10 +83,10 @@ bookstore3 =
   >>> Perm (Trans AssocR (CongL AssocL))
   >>> noop *** (Join >>> perf (\(t, _) -> return t)) *** noop
   >>> noop *** perf (\t -> return (priceOf' t)) *** noop
-  >>> noop *** Split *** noop
-  >>> noop *** Notify
-  >>> noop *** Branch bookstore1 (noop *** noop)
-  >>> noop *** Perm Idem
+  >>> noop *** Splt *** noop
+  >>> noop *** Ntfy
+  >>> noop *** Brch bookstore1 (noop *** noop)
+  >>> noop *** Idem
   >>> noop *** perf (\p -> return (p, ())) *** noop
   >>> noop *** Fork *** noop
   >>> Perm (Trans AssocL (Trans (CongR AssocL) AssocR))

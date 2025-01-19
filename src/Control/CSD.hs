@@ -17,16 +17,11 @@ data Local (a :: Type)
 
 -- Configuration equality
 data a ≃ b where
-  -- conjunction rules
   Swap :: (a, b) ≃ (b, a)
   AssocL :: (a, (b, c)) ≃ ((a, b), c)
   AssocR :: ((a, b), c) ≃ (a, (b, c))
   CongL :: a ≃ b -> (ctx, a) ≃ (ctx, b)
   CongR :: a ≃ b -> (a, ctx) ≃ (b, ctx)
-
-  -- Disjunction rules
-  Idem :: Either a a ≃ a
-
   Trans :: a ≃ b -> b ≃ c -> a ≃ c
 
 -------------------------------------------------------------------------------
@@ -44,9 +39,10 @@ data CSD f a b where
   Perm :: a ≃ b -> CSD f a b
 
   -- Conditional execution
-  Split :: CSD f (Local (Either a b)) (Either (Local a) (Local b))
-  Notify :: CSD f (Either a b, c) (Either (a, c) (b, c))
-  Branch :: CSD f a c -> CSD f b d -> CSD f (Either a b) (Either c d)
+  Splt :: CSD f (Local (Either a b)) (Either (Local a) (Local b))
+  Ntfy :: CSD f (Either a b, c) (Either (a, c) (b, c))
+  Brch :: CSD f a c -> CSD f b d -> CSD f (Either a b) (Either c d)
+  Idem :: CSD f (Either a a) a
 
 noop :: (Arrow f) => CSD f (Local a) (Local a)
 noop = Perf (arr id)
@@ -62,6 +58,9 @@ a >>> b = Seq a b
 (***) :: CSD f a c -> CSD f b d -> CSD f (a, b) (c, d)
 a *** b = Par a b
 
+(+++) :: CSD f a c -> CSD f b d -> CSD f (Either a b) (Either c d)
+a +++ b = Brch a b
+
 -------------------------------------------------------------------------------
 -- An interpreations to `Async`
 
@@ -73,7 +72,7 @@ type family Asynced cfg where
   Asynced (Either a b) = (Either (Asynced a) (Asynced b))
   Asynced (Local a) = Async a
 
-interpAsynced :: (forall a b. f a b -> a -> IO b) -> CSD f a b -> Asynced a -> IO (Asynced b)
+interpAsynced :: (forall c d. f c d -> c -> IO d) -> CSD f a b -> Asynced a -> IO (Asynced b)
 interpAsynced hdl (Perf eff) a = do
   async $ do
     a' <- wait a
@@ -98,25 +97,26 @@ interpAsynced _ Join (a, b) = do
     a' <- wait a
     b' <- wait b
     return (a', b')
-interpAsynced _ Split input = do
+interpAsynced _ Splt input = do
   i <- wait input
   case i of
     (Left x) -> Left <$> async (return x)
     (Right y) -> Right <$> async (return y)
-interpAsynced _ Notify (input1, input2) = do
+interpAsynced _ Ntfy (input1, input2) = do
   case input1 of
     (Left x)  -> return (Left (x, input2))
     (Right y) -> return (Right (y, input2))
-interpAsynced hdl (Branch f g) input = do
+interpAsynced hdl (Brch f g) input = do
   case input of
     (Left x) -> Left <$> interpAsynced hdl f x
     (Right y) -> Right <$> interpAsynced hdl g y
+interpAsynced _ Idem (Left a) = return a
+interpAsynced _ Idem (Right a) = return a
 -- structural rules
 interpAsynced _ (Perm Swap) (a, b) = return (b, a)
 interpAsynced hdl (Perm (CongL e)) (ctx, a) = (ctx,) <$> interpAsynced hdl (Perm e) a
 interpAsynced hdl (Perm (CongR e)) (a, ctx) = (,ctx) <$> interpAsynced hdl (Perm e) a
 interpAsynced _ (Perm AssocL) (a, (b, c)) = return ((a, b), c)
 interpAsynced _ (Perm AssocR) ((a, b), c) = return (a, (b, c))
-interpAsynced _ (Perm Idem) (Left a) = return a
-interpAsynced _ (Perm Idem) (Right a) = return a
 interpAsynced hdl (Perm (Trans e1 e2)) input = interpAsynced hdl (Perm e1) input >>= interpAsynced hdl (Perm e2)
+
