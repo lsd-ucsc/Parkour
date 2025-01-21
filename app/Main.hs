@@ -6,6 +6,7 @@ import Control.Arrow hiding ((>>>), (***))
 import Control.Concurrent.Async
 import Control.CSD
 import System.Environment
+import Control.Concurrent
 
 priceOf :: String -> Int
 priceOf "TaPL" = 80
@@ -30,11 +31,11 @@ bookstore1 :: (Monad m) => CSD (Kleisli m) (Local String, Local ()) (Local Int, 
 bookstore1 =
       (perf (\s -> return ((), s)) >>> Fork) *** noop
   >>> Perm AssocR
-  >>> noop *** (Join >>> perf (\(t, _) -> return t))
+  >>> noop *** (JoinL >>> perf (\(t, _) -> return t))
   >>> noop *** perf (\t -> return (priceOf t, ()))
   >>> noop *** Fork
   >>> Perm AssocL
-  >>> (Join >>> perf (\(_, p) -> return p)) *** noop
+  >>> (JoinR >>> perf (\(_, p) -> return p)) *** noop
 
 -- Example 2: Parallel Bookstore
 --
@@ -81,7 +82,7 @@ bookstore3 :: CSD (Kleisli IO) (Local String, (Local (), Local ())) (Local Int, 
 bookstore3 =
       (perf (\s -> return ((), s)) >>> Fork) *** noop *** noop
   >>> Perm (Trans AssocR (CongL AssocL))
-  >>> noop *** (Join >>> perf (\(t, _) -> return t)) *** noop
+  >>> noop *** (JoinL >>> perf (\(t, _) -> return t)) *** noop
   >>> noop *** perf (\t -> return (priceOf' t)) *** noop
   >>> noop *** Splt *** noop
   >>> noop *** Ntfy
@@ -90,7 +91,7 @@ bookstore3 =
   >>> noop *** perf (\p -> return (p, ())) *** noop
   >>> noop *** Fork *** noop
   >>> Perm (Trans AssocL (Trans (CongR AssocL) AssocR))
-  >>> (Join >>> perf (\(_, p) -> return p)) *** noop *** noop
+  >>> (JoinR >>> perf (\(_, p) -> return p)) *** noop *** noop
 
 main :: IO ()
 main = do
@@ -103,6 +104,20 @@ main = do
       (s1', s2') <- prog (s1, s2)
       s1'' <- async (wait s1' >>= print)
       mapM_ wait [s1'', s2']
+    ["bookstore1", "buyer"] -> do
+      s1 <- async (putStrLn "Type in the title of the book:" >> getLine)
+      s2 <- return empty
+      let prog = project bookstore1 (Conj Self (Peer "Seller")) runKleisli
+      (_, (s1', s2')) <- prog (s1, s2)
+      s1'' <- async (wait s1' >>= print)
+      mapM_ wait [s1'', s2']
+    ["bookstore1", "seller"] -> do
+        s1 <- return empty
+        s2 <- async (return ())
+        let prog = project bookstore1 (Conj (Peer "Buyer") Self) runKleisli
+        (_, (s1', s2')) <- prog (s1, s2)
+        mapM_ wait [s2']
+        threadDelay 5_000_000
     ["bookstore2"] -> do
       s11 <- async (putStrLn "Buyer 1: Type in the title of the book:" >> getLine)
       s12 <- async (return ())

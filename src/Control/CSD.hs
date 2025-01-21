@@ -5,6 +5,7 @@ module Control.CSD where
 import Control.Arrow
 import Control.Concurrent.Async
 import Data.Kind
+import Data.Tuple
 
 infix 0 ≃
 infixr 1 >>>
@@ -34,12 +35,9 @@ data CSD f a b where
 
   -- parallel composition
   Par :: CSD f a c -> CSD f b d -> CSD f (a, b) (c, d)
-  -- ForkL
-  -- ForkR
   Fork :: CSD f (Local (a, b)) (Local a, Local b)
-  -- JoinL
-  -- JoinR
-  Join :: (Show b, Read b) => CSD f (Local a, Local b) (Local (a, b))
+  JoinL :: (Show a, Read a) => CSD f (Local a, Local b) (Local (a, b))
+  JoinR :: (Show b, Read b) => CSD f (Local a, Local b) (Local (a, b))
   Perm :: a ≃ b -> CSD f a b
 
   -- Conditional execution
@@ -77,6 +75,9 @@ type family Asynced cfg where
   Asynced (Either a b) = (Either (Asynced a) (Asynced b))
   Asynced (Local a) = Async a
 
+swapAsynced :: Async (a, b) -> IO (Async (b, a))
+swapAsynced ab = async (swap <$> wait ab)
+
 interpAsynced :: (forall c d. f c d -> c -> IO d) -> CSD f a b -> Asynced a -> IO (Asynced b)
 interpAsynced hdl (Perf eff) a =
   async $ do
@@ -97,11 +98,14 @@ interpAsynced _ Fork ab = do
     (_, b) <- wait ab
     return b
   return (a', b')
-interpAsynced _ Join (a, b) = do
+interpAsynced _ JoinL (a, b) = do
   async $ do
     a' <- wait a
     b' <- wait b
     return (a', b')
+interpAsynced hdl JoinR (a, b) = do
+  ba <- interpAsynced hdl JoinL (b, a)
+  swapAsynced ba
 interpAsynced _ Splt input = do
   i <- wait input
   case i of
@@ -177,25 +181,34 @@ project Fork Self _ ab = do
 project Fork (Peer addr) _ _ = do
   return (Conj (Peer addr) (Peer addr), (empty, empty))
 -- Join
-project Join (Conj Self Self) _ (a, b) = do
+project JoinL (Conj Self Self) _ (a, b) = do
   ab <- async $ do
     a' <- wait a
     b' <- wait b
     return (a', b')
   return (Self, ab)
-project Join (Conj Self (Peer addr)) _ (a, _) = do
-  ab <- async $ do
-    a' <- wait a
-    b' <- recv addr
-    return (a', b')
-  return (Self, ab)
-project Join (Conj (Peer addr) Self) _ (_, b) = do
+project JoinL (Conj Self (Peer addr)) _ (a, _) = do
+  putStrLn "123"
   _ <- async $ do
-    b' <- wait b
-    send addr b'
+    a' <- wait a
+    send addr a'
+    return empty
   return (Peer addr, empty)
-project Join (Conj (Peer addr1) (Peer _)) _ _ = do
-  return (Peer addr1, empty)
+project JoinL (Conj (Peer addr) Self) _ (_, b) = do
+  ab <- async $ do
+    b' <- wait b
+    a' <- recv addr
+    return (a', b')
+  return (Self, ab)
+project JoinL (Conj (Peer _) (Peer addr2)) _ _ = do
+  return (Peer addr2, empty)
+project JoinR (Conj s1 s2) hdl (a, b) = do
+  (x, y) <- project JoinL (Conj s2 s1) hdl (b, a)
+  case x of
+    Self -> do
+      t <- async (swap <$> wait y)
+      return (Self, t)
+    (Peer addr) -> return (Peer addr, empty)
 -- Perm
 project (Perm Swap) (Conj s1 s2) _ (a, b) = return (Conj s2 s1, (b, a))
 project (Perm AssocL) (Conj s1 (Conj s2 s3)) _ (a, (b, c)) = return (Conj (Conj s1 s2) s3, ((a, b), c))
