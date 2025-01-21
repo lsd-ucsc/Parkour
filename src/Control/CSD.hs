@@ -34,13 +34,18 @@ data CSD f a b where
 
   -- parallel composition
   Par :: CSD f a c -> CSD f b d -> CSD f (a, b) (c, d)
+  -- ForkL
+  -- ForkR
   Fork :: CSD f (Local (a, b)) (Local a, Local b)
-  Join :: CSD f (Local a, Local b) (Local (a, b))
+  -- JoinL
+  -- JoinR
+  Join :: (Show b, Read b) => CSD f (Local a, Local b) (Local (a, b))
   Perm :: a ≃ b -> CSD f a b
 
   -- Conditional execution
   Splt :: CSD f (Local (Either a b)) (Either (Local a) (Local b))
-  Ntfy :: CSD f (Either a b, c) (Either (a, c) (b, c))
+  -- this Ntfy is overly constrained
+  Ntfy :: CSD f (Either (Local a) (Local b), Local c) (Either (Local a, Local c) (Local b, Local c))
   Brch :: CSD f a c -> CSD f b d -> CSD f (Either a b) (Either c d)
   Idem :: CSD f (Either a a) a
 
@@ -124,25 +129,22 @@ interpAsynced hdl (Perm (Trans e1 e2)) input = interpAsynced hdl (Perm e1) input
 -- Projection
 
 -- Backend function
-data Addr
+type Addr = String
 
-send :: Addr -> a -> IO ()
-send = undefined
+send :: (Show a) => Addr -> a -> IO ()
+send addr a = putStrLn (">>> send " ++ show a ++ " to " ++ addr)
 
-recv :: Addr -> IO a
-recv = undefined
+recv :: (Read a) => Addr -> IO a
+recv addr = putStrLn (">>> recv from " ++ addr) >> (read <$> getLine)
 
 -- Site Selector (coincidentally, backend configuration)
---
--- a site selector must have the same shape as the (site) configuration it selects, with
--- a `Local` replaced with either `a Self` or a `Peer`
 data Selector a where
   Self :: Selector (Local a)
   Peer :: Addr -> Selector (Local a)
   Conj :: Selector a -> Selector b -> Selector (a, b)
   Disj :: Selector a -> Selector b -> Selector (Either a b)
 
-empty :: Async a
+empty :: a
 empty = error "the value is elsewhere"
 
 project :: CSD f a b -> Selector a -> (forall x y. f x y -> x -> IO y) -> Asynced a -> IO (Selector b, Asynced b)
@@ -190,7 +192,7 @@ project Join (Conj Self (Peer addr)) _ (a, _) = do
 project Join (Conj (Peer addr) Self) _ (_, b) = do
   _ <- async $ do
     b' <- wait b
-    send addr b
+    send addr b'
   return (Peer addr, empty)
 project Join (Conj (Peer addr1) (Peer _)) _ _ = do
   return (Peer addr1, empty)
@@ -204,13 +206,35 @@ project (Perm (Trans x y)) s hdl a = do
   (s', b) <- project (Perm x) s hdl a
   project (Perm y) s' hdl b
 -- Splt
-project Splt s hdl _ = undefined
+project Splt Self _ a = do
+  a' <- wait a -- does this add extra blocking?
+  case a' of
+    (Left x) -> (\u -> (Disj Self Self, Left u)) <$> async (return x)
+    (Right y) -> (\u -> (Disj Self Self , Right u)) <$> async (return y)
+project Splt (Peer addr) _ _ = return (Disj (Peer addr) (Peer addr), empty)
 -- Ntfy
-project Ntfy s hdl _ = undefined
+project Ntfy (Conj (Disj Self Self) Self) _ (ab, c) =
+  return (Disj (Conj Self Self) (Conj Self Self), either (Left . (,c)) (Right . (,c)) ab)
+project Ntfy (Conj (Disj Self (Peer _)) Self) _ _ = undefined
+project Ntfy (Conj (Disj (Peer _) Self) Self) _ _ = undefined
+project Ntfy (Conj (Disj (Peer addr1) (Peer addr2)) Self) _ (_, c) = do
+  (ab :: Either () ()) <- recv addr1
+  return (Disj (Conj (Peer addr1) Self) (Conj (Peer addr2) Self), either (Left . (,c) . const empty) (Right . (,c) . const empty) ab)
+project Ntfy (Conj (Disj Self Self) (Peer addr)) _ (ab, _) = do
+  send addr (either (const ()) (const ()) ab)
+  return (Disj (Conj Self (Peer addr)) (Conj Self (Peer addr)), either (Left . (,empty)) (Right . (,empty)) ab)
+project Ntfy (Conj (Disj Self (Peer _)) (Peer _)) _ _ = undefined
+project Ntfy (Conj (Disj (Peer _) Self) (Peer _)) _ _ = undefined
+project Ntfy (Conj (Disj (Peer addr1) (Peer addr2)) (Peer addr3)) _ (ab, _) =
+  return (Disj (Conj (Peer addr1) (Peer addr3)) (Conj (Peer addr2) (Peer addr3)), either (Left . (,empty)) (Right . (,empty)) ab)
 -- Brch
-project (Brch f g) s hdl _ = undefined
+project (Brch f g) (Disj s1 s2) hdl ab =
+  case ab of
+    (Left a) -> (\(u, v) -> (Disj u empty, Left v)) <$> project f s1 hdl a
+    (Right b) -> (\(u, v) -> (Disj empty u, Right v)) <$> project g s2 hdl b
 -- Idem
-project Idem s hdl _ = undefined
+project Idem (Disj s1 _) _ (Left x) = return (s1, x)
+project Idem (Disj _ s2) _ (Right y) = return (s2, y)
 
 -- data Self
 -- data Skip
