@@ -15,9 +15,9 @@ library
     default-language: GHC2021
     hs-source-dirs:   src
     exposed-modules:
-        Control.CSD
         Control.CSD.Site
         Control.CSD.CSD
+        Control.CSD.Old
     -- other-modules:
     build-depends:
         base  ^>=4.17.2.1,

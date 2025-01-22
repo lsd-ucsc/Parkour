@@ -1,6 +1,6 @@
 {-# LANGUAGE TypeFamilies #-}
 
-module Control.CSD where
+module Control.CSD.Old where
 
 import Control.Arrow
 import Control.Concurrent.Async
