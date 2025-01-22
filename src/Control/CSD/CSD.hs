@@ -9,7 +9,7 @@ import Control.CSD.Site
 class (Perm f) => CSD f where
   -- Sequence Composition
   perf :: (a -> IO b) -> f (Site a) (Site b)
-  seqq :: f a b -> f b c -> f a c -- there's name conclit
+  seq :: f a b -> f b c -> f a c
 
   -- Parallel Composition
   par :: f a c -> f b d -> f (a, b) (c, d)
@@ -39,7 +39,7 @@ infixr 1 >>>
 infixr 3 ***
 
 (>>>) :: (CSD f) => f a b -> f b c -> f a c
-a >>> b = seqq a b
+a >>> b = Control.CSD.CSD.seq a b -- there's a name conflict
 
 (***) :: (CSD f) => f a c -> f b d -> f (a, b) (c, d)
 a *** b = par a b
@@ -51,7 +51,7 @@ a *** b = par a b
 
 instance CSD (Tmap Async IO) where
   perf act = Tmap $ \a -> async (wait a >>= act)
-  seqq f g = Tmap $ \a -> runTmap f a >>= runTmap g
+  seq f g = Tmap $ \a -> runTmap f a >>= runTmap g
   par  f g = Tmap $ \(a, b) -> (,) <$> runTmap f a <*> runTmap g b
   fork     = Tmap $ \ab -> (,) <$> async (fst <$> wait ab) <*> async (snd <$> wait ab)
   join     = Tmap $ \(a, b) -> async ((,) <$> wait a <*> wait b)
@@ -81,7 +81,7 @@ instance CSD (Tmap Located IO) where
     (There addr a) -> return (There addr a)
   -- the following two cases are exactly the same as the centralized semantics, which might mean
   -- we can futher refactor out things
-  seqq f g = Tmap $ \a -> runTmap f a >>= runTmap g
+  seq f g = Tmap $ \a -> runTmap f a >>= runTmap g
   par  f g = Tmap $ \(a, b) -> (,) <$> runTmap f a <*> runTmap g b
   fork = Tmap $ \case
     (Here ab) -> (,) <$> (Here <$> async (fst <$> wait ab)) <*> (Here <$> async (snd <$> wait ab))
