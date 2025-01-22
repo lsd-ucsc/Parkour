@@ -27,16 +27,16 @@ instance Perm (->) where
   congR f   = \(a, ctx) -> (f a, ctx)
   trans f g = \a -> g (f a)
 
-type family T f a where
-  T f (Site a) = f a
-  T f (a, b)   = (T f a, T f b)
+type family T t a where
+  T t (Site a) = t a
+  T t (a, b)   = (T t a, T t b)
 
-newtype Tmap f a b = Tmap { runTmap :: (T f a -> T f b) }
+newtype Tmap t m a b = Tmap { runTmap :: T t a -> m (T t b) }
 
-instance (Perm (Tmap f)) where
-  swap      = Tmap $ \(a, b) -> (b, a)
-  assocL    = Tmap $ \(a, (b, c)) -> ((a, b), c)
-  assocR    = Tmap $ \((a, b), c) -> (a, (b, c))
-  congL f   = Tmap $ \(ctx, a) -> (ctx, runTmap f a)
-  congR f   = Tmap $ \(a, ctx) -> (runTmap f a, ctx)
-  trans f g = Tmap $ \a -> runTmap g (runTmap f a)
+instance (Monad m) => (Perm (Tmap t m)) where
+  swap      = Tmap $ \(a, b) -> return (b, a)
+  assocL    = Tmap $ \(a, (b, c)) -> return ((a, b), c)
+  assocR    = Tmap $ \((a, b), c) -> return (a, (b, c))
+  congL f   = Tmap $ \(ctx, a) -> (ctx,) <$> runTmap f a
+  congR f   = Tmap $ \(a, ctx) -> (,ctx) <$> runTmap f a
+  trans f g = Tmap $ \a -> runTmap f a >>= runTmap g

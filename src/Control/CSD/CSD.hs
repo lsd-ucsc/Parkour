@@ -2,6 +2,7 @@
 
 module Control.CSD.CSD where
 
+import Control.Concurrent.Async
 import Control.CSD.Site
 
 class (Perm f) => CSD f where
@@ -38,4 +39,4 @@ a *** b = par a b
 -------------------------------------------------------------------------------
 -- * Interpretation
 
-instance (CSD (Tmap Async)) where
+instance (CSD (Tmap Async IO)) where
