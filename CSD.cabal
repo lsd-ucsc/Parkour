@@ -16,6 +16,8 @@ library
     hs-source-dirs:   src
     exposed-modules:
         Control.CSD
+        Control.CSD.Site
+        Control.CSD.CSD
     -- other-modules:
     build-depends:
         base  ^>=4.17.2.1,
