@@ -12,7 +12,8 @@ instance (WellFormed a, WellFormed b) => WellFormed (a, b)
 -- instance (WellFormed a, WellFormed b) => WellFormed (Either a b)
 
 class Perm f where
-  swap  :: f (a, b) (b, a)
+  noop   :: f a a
+  swap   :: f (a, b) (b, a)
   assocL :: f (a, (b, c)) ((a, b), c)
   assocR :: f ((a, b), c) (a, (b, c))
   congL  :: f a b -> f (ctx, a) (ctx, b)
@@ -20,6 +21,7 @@ class Perm f where
   trans  :: f a b -> f b c -> f a c
 
 instance Perm (->) where
+  noop      = \a -> a
   swap      = \(a, b) -> (b, a)
   assocL    = \(a, (b, c)) -> ((a, b), c)
   assocR    = \((a, b), c) -> (a, (b, c))
@@ -34,6 +36,7 @@ type family T t a where
 newtype Tmap t m a b = Tmap { runTmap :: T t a -> m (T t b) }
 
 instance (Monad m) => (Perm (Tmap t m)) where
+  noop      = Tmap $ \a -> return a
   swap      = Tmap $ \(a, b) -> return (b, a)
   assocL    = Tmap $ \(a, (b, c)) -> return ((a, b), c)
   assocR    = Tmap $ \((a, b), c) -> return (a, (b, c))
