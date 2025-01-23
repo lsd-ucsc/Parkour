@@ -2,16 +2,7 @@
 
 -- based on HasChor (https://github.com/gshen42/HasChor/blob/async/src/Choreography/Network/Http.hs)
 -- changed to final-tagless style and a few other changes
-module Control.CSD.Network
-  ( Host
-  , Port
-  , Url
-  , Id
-  , Network
-  , send
-  , recv
-  , runNetwork
-  ) where
+module Control.CSD.Network where
 
 import Control.Concurrent
 import Control.Exception (bracket)
@@ -25,6 +16,23 @@ import Network.Wai.Handler.Warp (run)
 import Servant.API
 import Servant.Client (BaseUrl(..), ClientM, client, mkClientEnv, runClientM, Scheme(Http))
 import Servant.Server (Server, Handler, serve)
+
+---------------------------------------------------------------------------------------------------
+-- * Network Programs
+
+type Port = Int
+type Host = String
+type Url = (Host, Port)
+type Loc = Url
+
+type Id = Int
+
+class (Monad m) => Network m where
+  send :: (Show a) => Loc -> Id -> a -> m ()
+  recv :: (Read a) => Loc -> Id -> m a
+
+---------------------------------------------------------------------------------------------------
+-- * HTTP (Servant) Backend
 
 -----------------------------------------------------------
 -- Servant API
@@ -87,22 +95,16 @@ server buf = handler
 -----------------------------------------------------------
 -- Put everything together
 
-type Port = Int
-type Host = String
-type Url = (Host, Port)
+logMsg :: String -> IO ()
+logMsg msg = putStrLn ("* Http backend: " ++ msg)
 
-type Id = Int
-
-data Ctx = Ctx {
+data HttpCtx = HttpCtx {
   mgr :: Http.Client.Manager,
   buf :: MsgBuf
 }
 
-newtype Network a = Http { runHttp :: ReaderT Ctx IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader Ctx)
-
-logMsg :: String -> IO ()
-logMsg msg = putStrLn ("* Http backend: " ++ msg)
+newtype Http a = Http { runHttp :: ReaderT HttpCtx IO a }
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx)
 
 toBaseUrl :: Url -> BaseUrl
 toBaseUrl (host, port) = BaseUrl {
@@ -112,29 +114,28 @@ toBaseUrl (host, port) = BaseUrl {
   baseUrlPath = ""
 }
 
-send :: (Show a) => Url -> Id -> a -> Network ()
-send dst id a = do
-  liftIO $ logMsg ("Send " ++ show a ++ " to " ++ show dst ++ " with id " ++ show id)
-  Ctx { mgr } <- ask
-  liftIO $ do
-    let env = mkClientEnv mgr (toBaseUrl dst)
-    res <- runClientM (sendServant id (show a)) env
-    either (logMsg . show) (void . return) res -- TODO: consider doing retry
+instance Network Http where
+  send dst id a = do
+    liftIO $ logMsg ("Send " ++ show a ++ " to " ++ show dst ++ " with id " ++ show id)
+    HttpCtx { mgr } <- ask
+    liftIO $ do
+      let env = mkClientEnv mgr (toBaseUrl dst)
+      res <- runClientM (sendServant id (show a)) env
+      either (logMsg . show) (void . return) res -- TODO: consider doing retry
 
-recv :: (Read a) => Url -> Id -> Network a
-recv src id = do
-  liftIO $ logMsg ("Wait for a message from " ++ show src ++ " with id " ++ show id)
-  Ctx {buf} <- ask
-  liftIO $ read <$> getMsg id buf
+  recv dst id = do
+    liftIO $ logMsg ("Wait for a message from " ++ show dst ++ " with id " ++ show id)
+    HttpCtx {buf} <- ask
+    liftIO $ read <$> getMsg id buf
 
 -- the top-most function
 -- the second argument specifies the port to listen for incoming messages
-runNetwork :: Network a -> Port -> IO a
-runNetwork m self = do
+runNetworkHttp :: (forall m. (Network m) => m a) -> Port -> IO a
+runNetworkHttp m self = do
   -- initialization
   mgr <- Http.Client.newManager Http.Client.defaultManagerSettings
   buf <- liftIO emptyMsgBuf
-  let ctx = Ctx { mgr, buf }
+  let ctx = HttpCtx { mgr, buf }
 
   -- start the server thread and the main thread
   let serverPort = self
@@ -142,4 +143,4 @@ runNetwork m self = do
   bracket
     (forkIO $ run serverPort app)
     killThread
-    (\_ -> runReaderT (runHttp m) ctx)
+    (\_ -> runReaderT (runHttp (m @Http)) ctx)
