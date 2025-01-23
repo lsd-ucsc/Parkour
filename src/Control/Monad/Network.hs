@@ -2,14 +2,14 @@
 
 -- based on HasChor (https://github.com/gshen42/HasChor/blob/async/src/Choreography/Network/Http.hs)
 -- changed to final-tagless style and a few other changes
-module Control.CSD.Network where
+module Control.Monad.Network where
 
 import Control.Concurrent
-import Control.Concurrent.Async.Lifted
-import Control.Exception (bracket)
+import Control.Concurrent.Async
 import Control.Monad.IO.Class
+import Control.Monad.Future
 import Control.Monad.Reader
-import Data.HashMap.Strict (HashMap)
+import Data.HashMap.Strict (HashMap, (!))
 import Data.HashMap.Strict qualified as HM
 import Data.Proxy
 import Network.HTTP.Client qualified as Http.Client
@@ -21,11 +21,7 @@ import Servant.Server (Server, Handler, serve)
 ---------------------------------------------------------------------------------------------------
 -- * Network Programs
 
-type Port = Int
-type Host = String
-type Url = (Host, Port)
-type Loc = Url
-
+type Loc = String
 type Id = Int
 
 class (Monad m) => Network m where
@@ -95,33 +91,49 @@ server buf = handler
       return NoContent
 
 -----------------------------------------------------------
--- Put everything together
+-- Http configuration
 
-logMsg :: String -> IO ()
-logMsg msg = putStrLn ("* Http backend: " ++ msg)
+-- | The HTTP backend configuration specifies how locations are mapped to
+-- network hosts and ports.
+newtype HttpConfig = HttpConfig
+  { locToUrl :: HashMap Loc BaseUrl
+  }
+
+type Host = String
+type Port = Int
+
+-- | Create a HTTP backend configuration from an association list that maps
+-- locations to network hosts and ports.
+mkHttpConfig :: [(Loc, (Host, Port))] -> HttpConfig
+mkHttpConfig = HttpConfig . HM.fromList . fmap (fmap f)
+  where
+    f :: (Host, Port) -> BaseUrl
+    f (host, port) =
+      BaseUrl
+        { baseUrlScheme = Servant.Client.Http,
+          baseUrlHost = host,
+          baseUrlPort = port,
+          baseUrlPath = ""
+        }
+
+-----------------------------------------------------------
+-- Put everything together, the `Http` monad
 
 data HttpCtx = HttpCtx {
+  cfg :: HttpConfig,
   mgr :: Http.Client.Manager,
   buf :: MsgBuf
 }
 
 newtype Http a = Http { unHttp :: ReaderT HttpCtx IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx, MonadAsync)
-
-toBaseUrl :: Url -> BaseUrl
-toBaseUrl (host, port) = BaseUrl {
-  baseUrlScheme = Servant.Client.Http,
-  baseUrlHost = host,
-  baseUrlPort = port,
-  baseUrlPath = ""
-}
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx, MonadFuture Async)
 
 instance Network Http where
   send dst id a = do
     liftIO $ logMsg ("Send " ++ show a ++ " to " ++ show dst ++ " with id " ++ show id)
-    HttpCtx { mgr } <- ask
+    HttpCtx { cfg, mgr } <- ask
     liftIO $ do
-      let env = mkClientEnv mgr (toBaseUrl dst)
+      let env = mkClientEnv mgr (locToUrl cfg ! dst)
       res <- runClientM (sendServant id (show a)) env
       either (logMsg . show) (void . return) res -- TODO: consider doing retry
 
@@ -132,22 +144,21 @@ instance Network Http where
 
 -- the top-most function
 -- the second argument specifies the port to listen for incoming messages
-runHttp :: Http a -> Port -> IO a
-runHttp m self = do
+runHttp :: HttpConfig -> Port -> Http a -> IO a
+runHttp cfg self m = do
   -- initialization
   mgr <- Http.Client.newManager Http.Client.defaultManagerSettings
   buf <- liftIO emptyMsgBuf
-  let ctx = HttpCtx { mgr, buf }
+  let ctx = HttpCtx { cfg, mgr, buf }
 
   -- start the server thread
   let serverPort = self
   let app = serve api (server buf)
-  forkIO $ run serverPort app
+  _ <- forkIO $ run serverPort app
 
   runReaderT (unHttp m) ctx
 
-  -- TODO: why the following doesn't work?
-  -- bracket
-  --   (forkIO $ run serverPort app)
-  --   killThread
-  --   (\_ -> runReaderT (unHttp m) ctx)
+  -- TODO: kill the server thread?
+
+logMsg :: String -> IO ()
+logMsg msg = putStrLn ("* Http backend: " ++ msg)
