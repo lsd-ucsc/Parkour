@@ -1,5 +1,4 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeFamilies #-}
 
 -- based on HasChor (https://github.com/gshen42/HasChor/blob/async/src/Choreography/Network/Http.hs)
 -- changed to final-tagless style and a few other changes
@@ -11,7 +10,6 @@ import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
-import Data.Kind (Type)
 import Data.Proxy
 import Network.HTTP.Client qualified as Http.Client
 import Network.Wai.Handler.Warp (run)
@@ -24,11 +22,9 @@ import Servant.Server (Server, Handler, serve)
 
 type Id = Int
 
-class (MonadIO m) => Network m where
-  type Loc m :: Type
-
-  send :: (Show a) => a -> Loc m -> Id -> m ()
-  recv :: (Read a) => Loc m -> Id -> m a
+class (MonadIO m) => Network loc m where
+  send :: (Show a) => a -> loc -> Id -> m ()
+  recv :: (Read a) => loc -> Id -> m a
 
 ---------------------------------------------------------------------------------------------------
 -- * HTTP (Servant) Backend
@@ -117,9 +113,7 @@ toBaseUrl (host, port) = BaseUrl {
   baseUrlPath = ""
 }
 
-instance Network Http where
-  -- type Config m
-  type Loc Http = Url
+instance Network Url Http where
 
   send a dst id = do
     liftIO $ logMsg ("Send " ++ show a ++ " to " ++ show dst ++ " with id " ++ show id)
@@ -136,7 +130,7 @@ instance Network Http where
 
 -- the top-most function
 -- the second argument specifies the port to listen for incoming messages
-runNetworkHttp :: (forall m. (Network m) => m a) -> Port -> IO a
+runNetworkHttp :: (forall loc m. (Network loc m) => m a) -> Port -> IO a
 runNetworkHttp p self = do
   -- initialization
   mgr <- Http.Client.newManager Http.Client.defaultManagerSettings
@@ -149,4 +143,4 @@ runNetworkHttp p self = do
   bracket
     (forkIO $ run serverPort app)
     killThread
-    (\_ -> runReaderT (runHttp (p @Http)) ctx)
+    (\_ -> runReaderT (runHttp (p @Url @Http)) ctx)
