@@ -20,11 +20,16 @@ import Servant.Server (Server, Handler, serve)
 ---------------------------------------------------------------------------------------------------
 -- * Network Programs
 
+type Port = Int
+type Host = String
+type Url = (Host, Port)
+type Loc = Url
+
 type Id = Int
 
-class (MonadIO m) => Network loc m where
-  send :: (Show a) => a -> loc -> Id -> m ()
-  recv :: (Read a) => loc -> Id -> m a
+class (Monad m) => Network m where
+  send :: (Show a) => Loc -> Id -> a -> m ()
+  recv :: (Read a) => Loc -> Id -> m a
 
 ---------------------------------------------------------------------------------------------------
 -- * HTTP (Servant) Backend
@@ -44,8 +49,8 @@ api = Proxy
 -----------------------------------------------------------
 -- Client action
 
-send' :: Id -> String -> ClientM NoContent
-send' = client api
+sendServant :: Id -> String -> ClientM NoContent
+sendServant = client api
 
 -----------------------------------------------------------
 -- Server action
@@ -72,7 +77,7 @@ putMsg msg id buf = do
   mvar <- lookupMsgBuf id buf
   putMVar mvar (show msg)
 
--- blocking semantics
+-- bLocking semantics
 getMsg :: (Read a) => Id -> MsgBuf -> IO a
 getMsg id buf = do
   mvar <- lookupMsgBuf id buf
@@ -101,10 +106,6 @@ data HttpCtx = HttpCtx {
 newtype Http a = Http { runHttp :: ReaderT HttpCtx IO a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx)
 
-type Port = Int
-type Host = String
-type Url = (Host, Port)
-
 toBaseUrl :: Url -> BaseUrl
 toBaseUrl (host, port) = BaseUrl {
   baseUrlScheme = Servant.Client.Http,
@@ -113,14 +114,13 @@ toBaseUrl (host, port) = BaseUrl {
   baseUrlPath = ""
 }
 
-instance Network Url Http where
-
-  send a dst id = do
+instance Network Http where
+  send dst id a = do
     liftIO $ logMsg ("Send " ++ show a ++ " to " ++ show dst ++ " with id " ++ show id)
     HttpCtx { mgr } <- ask
     liftIO $ do
       let env = mkClientEnv mgr (toBaseUrl dst)
-      res <- runClientM (send' id (show a)) env
+      res <- runClientM (sendServant id (show a)) env
       either (logMsg . show) (void . return) res -- TODO: consider doing retry
 
   recv dst id = do
@@ -130,8 +130,8 @@ instance Network Url Http where
 
 -- the top-most function
 -- the second argument specifies the port to listen for incoming messages
-runNetworkHttp :: (forall loc m. (Network loc m) => m a) -> Port -> IO a
-runNetworkHttp p self = do
+runNetworkHttp :: (forall m. (Network m) => m a) -> Port -> IO a
+runNetworkHttp m self = do
   -- initialization
   mgr <- Http.Client.newManager Http.Client.defaultManagerSettings
   buf <- liftIO emptyMsgBuf
@@ -143,4 +143,4 @@ runNetworkHttp p self = do
   bracket
     (forkIO $ run serverPort app)
     killThread
-    (\_ -> runReaderT (runHttp (p @Url @Http)) ctx)
+    (\_ -> runReaderT (runHttp (m @Http)) ctx)
