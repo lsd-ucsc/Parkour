@@ -17,11 +17,19 @@ library
     exposed-modules:
         Control.CSD.Site
         Control.CSD.CSD
+        Control.CSD.Network
+    other-modules:
         Control.CSD.Old
-    -- other-modules:
     build-depends:
-        base  ^>=4.17.2.1,
-        async ^>=2.2.5,
+        async                ^>= 2.2.5,
+        base                 ^>= 4.17.2.1,
+        http-client          ^>= 0.7.15,
+        mtl                  ^>= 2.2.2,
+        servant              ^>= 0.19.1,
+        servant-client       ^>= 0.19,
+        servant-server       ^>= 0.19.2,
+        unordered-containers ^>= 0.2.19.1,
+        warp                 ^>= 3.3.25,
 
 executable CSD-test
     import:           warnings
