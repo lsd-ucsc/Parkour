@@ -5,6 +5,7 @@
 module Control.CSD.Network where
 
 import Control.Concurrent
+import Control.Concurrent.Async.Lifted
 import Control.Exception (bracket)
 import Control.Monad.IO.Class
 import Control.Monad.Reader
@@ -88,6 +89,7 @@ server buf = handler
   where
     handler :: Id -> String -> Handler NoContent
     handler id msg = do
+      liftIO $ putStrLn "here"
       liftIO $ logMsg ("Received " ++ msg ++ " with id " ++ show id)
       liftIO $ putMsg msg id buf
       return NoContent
@@ -103,8 +105,8 @@ data HttpCtx = HttpCtx {
   buf :: MsgBuf
 }
 
-newtype Http a = Http { runHttp :: ReaderT HttpCtx IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx)
+newtype Http a = Http { unHttp :: ReaderT HttpCtx IO a }
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx, MonadAsync)
 
 toBaseUrl :: Url -> BaseUrl
 toBaseUrl (host, port) = BaseUrl {
@@ -130,17 +132,22 @@ instance Network Http where
 
 -- the top-most function
 -- the second argument specifies the port to listen for incoming messages
-runNetworkHttp :: (forall m. (Network m) => m a) -> Port -> IO a
-runNetworkHttp m self = do
+runHttp :: Http a -> Port -> IO a
+runHttp m self = do
   -- initialization
   mgr <- Http.Client.newManager Http.Client.defaultManagerSettings
   buf <- liftIO emptyMsgBuf
   let ctx = HttpCtx { mgr, buf }
 
-  -- start the server thread and the main thread
+  -- start the server thread
   let serverPort = self
   let app = serve api (server buf)
-  bracket
-    (forkIO $ run serverPort app)
-    killThread
-    (\_ -> runReaderT (runHttp (m @Http)) ctx)
+  forkIO $ run serverPort app
+
+  runReaderT (unHttp m) ctx
+
+  -- TODO: why the following doesn't work?
+  -- bracket
+  --   (forkIO $ run serverPort app)
+  --   killThread
+  --   (\_ -> runReaderT (unHttp m) ctx)

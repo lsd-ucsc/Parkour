@@ -2,9 +2,10 @@
 
 module Main where
 
-import Control.Concurrent.Async
+import Control.Concurrent.Async.Lifted
 import Control.CSD.Site
 import Control.CSD.CSD
+import Control.CSD.Network
 import System.Environment
 
 priceOf :: String -> Int
@@ -26,7 +27,7 @@ priceOf _      = 999_999_999
 --                   |/            |
 --                 < Int          < ()
 
-bookstore1 :: (CSD f) => f (Site String, Site ()) (Site Int, Site ())
+bookstore1 :: (Monad m, CSD f m) => f (Site String, Site ()) (Site Int, Site ())
 bookstore1 =
       (perf (\s -> return ((), s)) >>> fork) *** noop
   >>> assocR
@@ -44,7 +45,7 @@ bookstore1 =
 -- When acutally running this choreography, we expect the *physical* seller would take the
 -- role of both logical seller and run them in parallel.
 
-bookstore2 :: (CSD f) => f ((Site String, Site ()), (Site String, Site ())) ((Site Int, Site ()), (Site Int, Site ()))
+bookstore2 :: (Monad m, CSD f m) => f ((Site String, Site ()), (Site String, Site ())) ((Site Int, Site ()), (Site Int, Site ()))
 bookstore2 = bookstore1 *** bookstore1
 
 priceOf' :: String -> Either String Int
@@ -105,13 +106,15 @@ main = do
     ["bookstore1", "buyer"] -> do
       s1 <- async (putStrLn "Type in the title of the book:" >> getLine)
       s2 <- async (return ())
-      (Here s1, There _ s2) <- project bookstore1 (Here s1, There "2.2.2.2:8080" s2)
+      let prog = project bookstore1 (Here s1, There s2 ("localhost", 40002))
+      (Here s1, There s2 _) <- runHttp prog 40001
       s1 <- async (wait s1 >>= print)
       mapM_ wait [s1, s2]
     ["bookstore1", "seller"] -> do
       s1 <- async (return ())
       s2 <- async (return ())
-      (There _ s1, Here s2) <- project bookstore1 (There "1.1.1.1:8080" s1, Here s2)
+      let prog = project bookstore1 (There s1 ("localhost", 40001), Here s2)
+      (There s1 _, Here s2) <- runHttp prog 40002
       mapM_ wait [s1, s2]
     ["bookstore2"] -> do
       s11 <- async (putStrLn "Buyer 1: Type in the title of the book:" >> getLine)
@@ -127,7 +130,8 @@ main = do
       s12 <- async (return ())
       s21 <- async (return ())
       s22 <- async (return ())
-      ((Here s11, There _ s12), (There _ s21, There _ s22)) <- project bookstore2 ((Here s11, There "3.3.3.3" s12), (There "2.2.2.2" s21, There "3.3.3.3" s22))
+      let prog = project bookstore2 ((Here s11, There s12 ("localhost", 40003)), (There s21 ("localhost", 40002), There s22 ("localhost", 40003)))
+      ((Here s11, There s12 _), (There s21 _, There s22 _)) <- runHttp prog 40001
       s11 <- async (wait s11 >>= print)
       mapM_ wait [s11, s12, s21, s22]
     ["bookstore2", "buyer2"] -> do
@@ -135,7 +139,8 @@ main = do
       s12 <- async (return ())
       s21 <- async (putStrLn "Buyer 2: Type in the title of the book:" >> getLine)
       s22 <- async (return ())
-      ((There _ s11, There _ s12), (Here s21, There _ s22)) <- project bookstore2 ((There "1.1.1.1" s11, There "3.3.3.3" s12), (Here s21, There "3.3.3.3" s22))
+      let prog = project bookstore2 ((There s11 ("localhost", 40001), There s12 ("localhost", 40003)), (Here s21, There s22 ("localhost", 40003)))
+      ((There s11 _, There s12 _), (Here s21, There s22 _)) <- runHttp prog 40002
       s21 <- async (wait s21 >>= print)
       mapM_ wait [s11, s12, s21, s22]
     ["bookstore2", "seller"] -> do
@@ -143,7 +148,8 @@ main = do
       s12 <- async (return ())
       s21 <- async (return ())
       s22 <- async (return ())
-      ((There _ s11, Here s12), (There _ s21, Here s22)) <- project bookstore2 ((There "1.1.1.1" s11, Here s12), (There "2.2.2.2" s21, Here s22))
+      let prog = project bookstore2 ((There s11 ("localhost", 40001), Here s12), (There s21 ("localhost", 40002), Here s22))
+      ((There s11 _, Here s12), (There s21 _, Here s22)) <- runHttp prog 40003
       mapM_ wait [s11, s12, s21, s22]
 
     -- ["bookstore3"] -> do

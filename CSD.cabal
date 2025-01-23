@@ -15,6 +15,7 @@ library
     default-language: GHC2021
     hs-source-dirs:   src
     exposed-modules:
+        Control.Concurrent.Async.Lifted
         Control.CSD.Site
         Control.CSD.CSD
         Control.CSD.Network
@@ -38,5 +39,4 @@ executable CSD-test
     main-is:          Main.hs
     build-depends:
         base ^>=4.17.2.1,
-        async ^>=2.2.5,
         CSD
