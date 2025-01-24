@@ -1,6 +1,5 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE FunctionalDependencies #-}
 
 module Control.CSD.CSD where
 
@@ -9,9 +8,10 @@ import Control.CSD.Site
 import Control.CSD.Network
 import Control.Monad.State hiding (join)
 
-class (Perm f) => CSD f m | f -> m where
+class (Perm f) => CSD f where
+
   -- Sequence Composition
-  perf :: (a -> m b) -> f (Site a) (Site b)
+  perf :: (a -> IO b) -> f (Site a) (Site b)
   seq :: f a b -> f b c -> f a c
 
   -- Parallel Composition
@@ -41,10 +41,10 @@ class (Perm f) => CSD f m | f -> m where
 infixr 1 >>>
 infixr 3 ***
 
-(>>>) :: (CSD f m) => f a b -> f b c -> f a c
+(>>>) :: (CSD f) => f a b -> f b c -> f a c
 a >>> b = Control.CSD.CSD.seq a b -- there's a name conflict
 
-(***) :: (CSD f m) => f a c -> f b d -> f (a, b) (c, d)
+(***) :: (CSD f) => f a c -> f b d -> f (a, b) (c, d)
 a *** b = par a b
 
 ---------------------------------------------------------------------------------------------------
@@ -52,42 +52,41 @@ a *** b = par a b
 
 -- ** Centralized Semantics
 
-instance (MonadAsync m) => CSD (Tmap Async m) m where
-  perf act = Tmap $ \a -> async (wait a >>= act)
-  seq f g  = Tmap $ \a -> runTmap f a >>= runTmap g
-  par f g  = Tmap $ \(a, b) -> (,) <$> runTmap f a <*> runTmap g b
-  fork     = Tmap $ \ab -> (,) <$> async (fst <$> wait ab) <*> async (snd <$> wait ab)
-  join     = Tmap $ \(a, b) -> async ((,) <$> wait a <*> wait b)
+instance CSD (Interp Async IO) where
+  perf act = Interp $ \a -> async (wait a >>= act)
+  seq f g  = Interp $ \a -> runInterp f a >>= runInterp g
+  par f g  = Interp $ \(a, b) -> (,) <$> runInterp f a <*> runInterp g b
+  fork     = Interp $ \ab -> (,) <$> async (fst <$> wait ab) <*> async (snd <$> wait ab)
+  join     = Interp $ \(a, b) -> async ((,) <$> wait a <*> wait b)
 
-runCSD :: Tmap Async IO a b  -> T Async a -> IO (T Async b)
-runCSD = runTmap
+-- a special case of the above instance
+runCSD :: (forall f. (CSD f) => f a b) -> I Async a -> IO (I Async b)
+runCSD f = runInterp (f @(Interp Async IO))
 
 -- ** Distributed Semantics
 
 data Located a where
-  Here  :: Async a -> Located a
-  There :: Async () -> Url -> Located a
+  Self :: Async a -> Located a
+  Peer :: Async () -> Loc -> Located a
 
 inc :: (Monad m) => StateT Int m Int
 inc = do { x <- get; put (x + 1); return x }
 
-instance (MonadAsync m, Network m) => CSD (Tmap Located (StateT Int m)) m where
-  perf act = Tmap $ \case
-    (Here a) -> Here <$> lift (async (wait a >>= act))
-    (There a loc) -> return (There a loc)
-  -- the following two cases are exactly the same as the centralized semantics, which might mean
-  -- we can futher refactor out things
-  seq f g = Tmap $ \a -> runTmap f a >>= runTmap g
-  par  f g = Tmap $ \(a, b) -> (,) <$> runTmap f a <*> runTmap g b
-  fork = Tmap $ \case
-    (Here ab) -> (,) <$> (Here <$> lift (async (fst <$> wait ab))) <*> (Here <$> lift (async (snd <$> wait ab)))
-    (There a loc) -> return (There a loc, There a loc)
-  join = Tmap $ \case
-    (Here a, Here b) -> Here <$> lift (async ((,) <$> wait a <*> wait b))
-    (Here a, There _ loc) -> Here  <$> do { x <- inc; lift (async ((,) <$> wait a <*> recv loc x)) }
-    (There a loc, Here b) -> There <$> do { x <- inc; lift (async (wait a >> wait b >>= send loc x)) } <*> pure loc
-    (There a loc, There _ _) -> inc >> return (There a loc)
+instance CSD (InterpT Located Http (StateT Id)) where
+  perf act = InterpT $ \case
+    (Self a) -> Self <$> lift (async (wait a >>= liftIO . act))
+    (Peer a loc) -> return (Peer a loc)
+  -- the following two cases are exactly the same as the centralized semantics
+  seq f g = InterpT $ \a -> runInterpT f a >>= runInterpT g
+  par  f g = InterpT $ \(a, b) -> (,) <$> runInterpT f a <*> runInterpT g b
+  fork = InterpT $ \case
+    (Self ab) -> (,) <$> (Self <$> lift (async (fst <$> wait ab))) <*> (Self <$> lift (async (snd <$> wait ab)))
+    (Peer a loc) -> return (Peer a loc, Peer a loc)
+  join = InterpT $ \case
+    (Self a, Self b) -> Self <$> lift (async ((,) <$> wait a <*> wait b))
+    (Self a, Peer _ loc) -> Self <$> do { x <- inc; lift (async ((,) <$> wait a <*> recv loc x)) }
+    (Peer a loc, Self b) -> Peer <$> do { x <- inc; lift (async (wait a >> wait b >>= send loc x)) } <*> pure loc
+    (Peer a loc, Peer _ _) -> inc >> return (Peer a loc) -- the right one is the incoming site
 
-project :: forall m a b. (MonadAsync m, Network m) =>
-  (forall f. (CSD f m) => f a b) -> T Located a -> m (T Located b)
-project f x = evalStateT (runTmap (f @(Tmap Located (StateT Int m))) x) 0
+project :: (forall f. (CSD f) => f a b) -> I Located a -> Http (I Located b)
+project f a = evalStateT (runInterpT (f @(InterpT Located Http (StateT Int))) a) 0

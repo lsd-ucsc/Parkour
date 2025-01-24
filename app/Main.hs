@@ -3,9 +3,9 @@
 module Main where
 
 import Control.Concurrent.Async.Lifted
+import Control.CSD.Network
 import Control.CSD.Site
 import Control.CSD.CSD
-import Control.CSD.Network
 import System.Environment
 
 priceOf :: String -> Int
@@ -27,8 +27,18 @@ priceOf _      = 999_999_999
 --                   |/            |
 --                 < Int          < ()
 
-bookstore1 :: (Monad m, CSD f m) => f (Site String, Site ()) (Site Int, Site ())
+bookstore1 :: (CSD f) => f (Site (), Site ()) (Site (), Site ())
 bookstore1 =
+      (perf (\_ -> putStrLn ">>> Type in the title of the book:" >> ((),) <$> getLine) >>> forkR) *** noop
+  >>> assocR
+  >>> noop *** (joinL >>> perf (\(_, t) -> return t))
+  >>> noop *** perf (\t -> return (priceOf t, ()))
+  >>> noop *** fork
+  >>> assocL
+  >>> (joinR >>> perf (\(_, p) -> print p)) *** noop
+
+bookstore1' :: (CSD f) => f (Site String, Site ()) (Site Int, Site ())
+bookstore1' =
       (perf (\s -> return ((), s)) >>> fork) *** noop
   >>> assocR
   >>> noop *** (joinL >>> perf (\(_, t) -> return t))
@@ -45,8 +55,17 @@ bookstore1 =
 -- When acutally running this choreography, we expect the *physical* seller would take the
 -- role of both logical seller and run them in parallel.
 
-bookstore2 :: (Monad m, CSD f m) => f ((Site String, Site ()), (Site String, Site ())) ((Site Int, Site ()), (Site Int, Site ()))
-bookstore2 = bookstore1 *** bookstore1
+loop :: (CSD f) => f a a -> f a a
+loop f = f >>> loop f
+
+bookstore2 :: (CSD f) => f (Site (), (Site (), Site ())) ((Site (), Site ()), (Site (), Site ()))
+bookstore2 =
+      noop *** noop *** (perf (\_ -> return ((), ())) >>> fork)
+  >>> perm1
+  >>> loop (bookstore1 *** bookstore1)
+  where
+    perm1 :: (CSD f) => f (Site (), (Site (), (Site (), Site ()))) ((Site (), Site ()), (Site (), Site ()))
+    perm1 = trans (congL assocL) (trans (congL swap) assocL)
 
 priceOf' :: String -> Either String Int
 priceOf' "HoTT" = Right 123
@@ -98,60 +117,50 @@ main = do
   args <- getArgs
   case args of
     ["bookstore1"] -> do
-      s1 <- async (putStrLn "Type in the title of the book:" >> getLine)
+      s1 <- async (return ())
       s2 <- async (return ())
       (s1', s2') <- runCSD bookstore1 (s1, s2)
-      s1'' <- async (wait s1' >>= print)
-      mapM_ wait [s1'', s2']
+      mapM_ wait [s1', s2']
     ["bookstore1", "buyer"] -> do
-      s1 <- async (putStrLn "Type in the title of the book:" >> getLine)
+      s1 <- async (return ())
       s2 <- async (return ())
-      let prog = project bookstore1 (Here s1, There s2 ("localhost", 40002))
-      (Here s1, There s2 _) <- runHttp prog 40001
+      let prog = project bookstore1 (Self s1, Peer s2 "seller")
+      (Self s1, Peer s2 _) <- runHttp config 40001 prog
       s1 <- async (wait s1 >>= print)
       mapM_ wait [s1, s2]
     ["bookstore1", "seller"] -> do
       s1 <- async (return ())
       s2 <- async (return ())
-      let prog = project bookstore1 (There s1 ("localhost", 40001), Here s2)
-      (There s1 _, Here s2) <- runHttp prog 40002
+      let prog = project bookstore1 (Peer s1 "buyer", Self s2)
+      (Peer s1 _, Self s2) <- runHttp config 40002 prog
       mapM_ wait [s1, s2]
     ["bookstore2"] -> do
-      s11 <- async (putStrLn "Buyer 1: Type in the title of the book:" >> getLine)
-      s12 <- async (return ())
-      s21 <- async (putStrLn "Buyer 2: Type in the title of the book:" >> getLine)
-      s22 <- async (return ())
-      ((s11, s12), (s21, s22)) <- runCSD bookstore2 ((s11, s12), (s21, s22))
-      s11 <- async (wait s11 >>= print)
-      s21 <- async (wait s21 >>= print)
-      mapM_ wait [s11, s12, s21, s22]
-    ["bookstore2", "buyer1"] -> do
-      s11 <- async (putStrLn "Buyer 1: Type in the title of the book:" >> getLine)
-      s12 <- async (return ())
-      s21 <- async (return ())
-      s22 <- async (return ())
-      let prog = project bookstore2 ((Here s11, There s12 ("localhost", 40003)), (There s21 ("localhost", 40002), There s22 ("localhost", 40003)))
-      ((Here s11, There s12 _), (There s21 _, There s22 _)) <- runHttp prog 40001
-      s11 <- async (wait s11 >>= print)
-      mapM_ wait [s11, s12, s21, s22]
-    ["bookstore2", "buyer2"] -> do
-      s11 <- async (return ())
-      s12 <- async (return ())
-      s21 <- async (putStrLn "Buyer 2: Type in the title of the book:" >> getLine)
-      s22 <- async (return ())
-      let prog = project bookstore2 ((There s11 ("localhost", 40001), There s12 ("localhost", 40003)), (Here s21, There s22 ("localhost", 40003)))
-      ((There s11 _, There s12 _), (Here s21, There s22 _)) <- runHttp prog 40002
-      s21 <- async (wait s21 >>= print)
-      mapM_ wait [s11, s12, s21, s22]
+      s1 <- async (return ())
+      s2 <- async (return ())
+      s3 <- async (return ())
+      ((s1, s4), (s2, s3)) <- runCSD bookstore2 (s1, (s2, s3))
+      mapM_ wait [s1, s2, s3, s4]
+    ["bookstore2", "buyer"] -> do
+      s1 <- async (return ())
+      s2 <- async (return ())
+      s3 <- async (return ())
+      let prog = project bookstore2 (Self s1, (Peer s2 "buyer2", Peer s3 "seller"))
+      ((Self s1, Peer s4 _), (Peer s2 _, Peer s3 _)) <- runHttp config 40001 prog
+      mapM_ wait [s1, s2, s3, s4]
     ["bookstore2", "seller"] -> do
-      s11 <- async (return ())
-      s12 <- async (return ())
-      s21 <- async (return ())
-      s22 <- async (return ())
-      let prog = project bookstore2 ((There s11 ("localhost", 40001), Here s12), (There s21 ("localhost", 40002), Here s22))
-      ((There s11 _, Here s12), (There s21 _, Here s22)) <- runHttp prog 40003
-      mapM_ wait [s11, s12, s21, s22]
-
+      s1 <- async (return ())
+      s2 <- async (return ())
+      s3 <- async (return ())
+      let prog = project bookstore2 (Peer s1 "buyer", (Peer s2 "buyer2", Self s3))
+      ((Peer s1 _, Self s4), (Peer s2 _,  Self s3)) <- runHttp config 40002 prog
+      mapM_ wait [s1, s2, s3, s4]
+    ["bookstore2", "buyer2"] -> do
+      s1 <- async (return ())
+      s2 <- async (return ())
+      s3 <- async (return ())
+      let prog = project bookstore2 (Peer s1 "buyer", (Self s2, Peer s3 "seller"))
+      ((Peer s1 _, Peer s4 _), (Self s2,  Peer s3 _)) <- runHttp config 40003 prog
+      mapM_ wait [s1, s2, s3, s4]
     -- ["bookstore3"] -> do
     --   s1 <- async (putStrLn "Type in the title of the book:" >> getLine)
     --   s2 <- async (return ())
@@ -161,3 +170,10 @@ main = do
     --   s1'' <- async (wait s1' >>= print)
     --   mapM_ wait [s1'', s2', s3']
     _ -> putStrLn "Unknown command-line arguments"
+  where
+    config :: HttpConfig
+    config = mkHttpConfig
+      [ ("buyer", ("localhost", 40001)),
+        ("seller", ("localhost", 40002)),
+        ("buyer2", ("localhost", 40003))
+      ]

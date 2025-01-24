@@ -15,9 +15,9 @@ library
     default-language: GHC2021
     hs-source-dirs:   src
     exposed-modules:
-        Control.Monad.Future
-        Control.Monad.Network
+        Control.Concurrent.Async.Lifted
         Control.CSD.Site
+        Control.CSD.Network
         Control.CSD.CSD
     other-modules:
         Control.CSD.Old
@@ -29,6 +29,7 @@ library
         servant              ^>= 0.19.1,
         servant-client       ^>= 0.19,
         servant-server       ^>= 0.19.2,
+        transformers         ^>= 0.5.6.2,
         unordered-containers ^>= 0.2.19.1,
         warp                 ^>= 3.3.25,
 

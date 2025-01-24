@@ -2,12 +2,11 @@
 
 -- based on HasChor (https://github.com/gshen42/HasChor/blob/async/src/Choreography/Network/Http.hs)
 -- changed to final-tagless style and a few other changes
-module Control.Monad.Network where
+module Control.CSD.Network where
 
 import Control.Concurrent
-import Control.Concurrent.Async
+import Control.Concurrent.Async.Lifted
 import Control.Monad.IO.Class
-import Control.Monad.Future
 import Control.Monad.Reader
 import Data.HashMap.Strict (HashMap, (!))
 import Data.HashMap.Strict qualified as HM
@@ -85,7 +84,6 @@ server buf = handler
   where
     handler :: Id -> String -> Handler NoContent
     handler id msg = do
-      liftIO $ putStrLn "here"
       liftIO $ logMsg ("Received " ++ msg ++ " with id " ++ show id)
       liftIO $ putMsg msg id buf
       return NoContent
@@ -126,7 +124,7 @@ data HttpCtx = HttpCtx {
 }
 
 newtype Http a = Http { unHttp :: ReaderT HttpCtx IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx, MonadFuture Async)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx, MonadAsync)
 
 instance Network Http where
   send dst id a = do
@@ -161,4 +159,4 @@ runHttp cfg self m = do
   -- TODO: kill the server thread?
 
 logMsg :: String -> IO ()
-logMsg msg = putStrLn ("* Http backend: " ++ msg)
+logMsg msg = putStrLn ("* log: " ++ msg)

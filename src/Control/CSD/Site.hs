@@ -20,26 +20,31 @@ class Perm f where
   congR  :: f a b -> f (a, ctx) (b, ctx)
   trans  :: f a b -> f b c -> f a c
 
-instance Perm (->) where
-  noop      = \a -> a
-  swap      = \(a, b) -> (b, a)
-  assocL    = \(a, (b, c)) -> ((a, b), c)
-  assocR    = \((a, b), c) -> (a, (b, c))
-  congL f   = \(ctx, a) -> (ctx, f a)
-  congR f   = \(a, ctx) -> (f a, ctx)
-  trans f g = \a -> g (f a)
+-- interpretations of a site configuration
+type family I i a where
+  I i (Site a) = i a
+  I i (a, b)   = (I i a, I i b)
 
-type family T t a where
-  T t (Site a) = t a
-  T t (a, b)   = (T t a, T t b)
+-- interpretations of a CSD
+newtype Interp i m a b = Interp { runInterp :: I i a -> m (I i b) }
+newtype InterpT i m t a b = InterpT { runInterpT :: I i a -> t m (I i b) }
 
-newtype Tmap t m a b = Tmap { runTmap :: T t a -> m (T t b) }
+-- TODO: is it possible to de-duplicate the following code?
 
-instance (Monad m) => (Perm (Tmap t m)) where
-  noop      = Tmap $ \a -> return a
-  swap      = Tmap $ \(a, b) -> return (b, a)
-  assocL    = Tmap $ \(a, (b, c)) -> return ((a, b), c)
-  assocR    = Tmap $ \((a, b), c) -> return (a, (b, c))
-  congL f   = Tmap $ \(ctx, a) -> (ctx,) <$> runTmap f a
-  congR f   = Tmap $ \(a, ctx) -> (,ctx) <$> runTmap f a
-  trans f g = Tmap $ \a -> runTmap f a >>= runTmap g
+instance (Monad m) => (Perm (Interp i m)) where
+  noop      = Interp $ \a -> return a
+  swap      = Interp $ \(a, b) -> return (b, a)
+  assocL    = Interp $ \(a, (b, c)) -> return ((a, b), c)
+  assocR    = Interp $ \((a, b), c) -> return (a, (b, c))
+  congL f   = Interp $ \(ctx, a) -> (ctx,) <$> runInterp f a
+  congR f   = Interp $ \(a, ctx) -> (,ctx) <$> runInterp f a
+  trans f g = Interp $ \a -> runInterp f a >>= runInterp g
+
+instance (Monad (t m)) => (Perm (InterpT i m t)) where
+  noop      = InterpT $ \a -> return a
+  swap      = InterpT $ \(a, b) -> return (b, a)
+  assocL    = InterpT $ \(a, (b, c)) -> return ((a, b), c)
+  assocR    = InterpT $ \((a, b), c) -> return (a, (b, c))
+  congL f   = InterpT $ \(ctx, a) -> (ctx,) <$> runInterpT f a
+  congR f   = InterpT $ \(a, ctx) -> (,ctx) <$> runInterpT f a
+  trans f g = InterpT $ \a -> runInterpT f a >>= runInterpT g
