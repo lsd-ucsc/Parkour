@@ -1,21 +1,16 @@
 module Control.Concurrent.Async.Lifted
   ( Async
-  , MonadAsync(async, wait)
+  , async
+  , wait
   )
   where
 
 import Control.Concurrent.Async (Async)
 import Control.Concurrent.Async qualified as Original
-import Control.Monad.Reader
+import Control.Monad.IO.Class
 
-class (Monad m) => MonadAsync m where
-  async :: m a -> m (Async a)
-  wait :: Async a -> m a
+async :: (MonadIO m) => IO a -> m (Async a)
+async = liftIO . Original.async
 
-instance MonadAsync IO where
-  async = Original.async
-  wait = Original.wait
-
-instance (MonadAsync m) => MonadAsync (ReaderT r m) where
-  async f = ReaderT $ \r -> async (runReaderT f r)
-  wait a = ReaderT $ \_ -> wait a
+wait :: (MonadIO m) => Async a -> m a
+wait = liftIO . Original.wait

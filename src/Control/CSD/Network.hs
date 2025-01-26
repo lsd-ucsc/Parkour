@@ -21,11 +21,13 @@ import Servant.Server (Server, Handler, serve)
 -- * Network Programs
 
 type Loc = String
+type Src = Loc
+type Rmt = Loc
 type Id = Int
 
 class (Monad m) => Network m where
-  send :: (Show a) => Loc -> Id -> a -> m ()
-  recv :: (Read a) => Loc -> Id -> m a
+  send :: (Show a) => Rmt -> Src -> Id -> a -> m (Async ())
+  recv :: (Read a) => Src -> Id -> m (Async a)
 
 ---------------------------------------------------------------------------------------------------
 -- * HTTP (Servant) Backend
@@ -35,6 +37,7 @@ class (Monad m) => Network m where
 
 type API =
   "send"
+    :> Capture "src" Loc
     :> Capture "id" Id
     :> ReqBody '[PlainText] String
     :> PostNoContent
@@ -45,47 +48,47 @@ api = Proxy
 -----------------------------------------------------------
 -- Client action
 
-sendServant :: Id -> String -> ClientM NoContent
+sendServant :: Src -> Id -> String -> ClientM NoContent
 sendServant = client api
 
 -----------------------------------------------------------
 -- Server action
 
-type MsgBuf = MVar (HashMap Id (MVar String))
+type MsgBuf = MVar (HashMap (Src, Id) (MVar String))
 
 emptyMsgBuf :: IO MsgBuf
 emptyMsgBuf = newMVar HM.empty
 
-lookupMsgBuf :: Id -> MsgBuf -> IO (MVar String)
-lookupMsgBuf id buf = do
+lookupMsgBuf :: Src -> Id -> MsgBuf -> IO (MVar String)
+lookupMsgBuf src id buf = do
   map <- takeMVar buf
-  case HM.lookup id map of
+  case HM.lookup (src, id) map of
     Just mvar -> do
       putMVar buf map
       return mvar
     Nothing -> do
       mvar <- newEmptyMVar
-      putMVar buf (HM.insert id mvar map)
+      putMVar buf (HM.insert (src, id) mvar map)
       return mvar
 
-putMsg :: (Show a) => a -> Id -> MsgBuf -> IO ()
-putMsg msg id buf = do
-  mvar <- lookupMsgBuf id buf
+putMsg :: (Show a) => a -> Src -> Id -> MsgBuf -> IO ()
+putMsg msg src id buf = do
+  mvar <- lookupMsgBuf src id buf
   putMVar mvar (show msg)
 
 -- bLocking semantics
-getMsg :: (Read a) => Id -> MsgBuf -> IO a
-getMsg id buf = do
-  mvar <- lookupMsgBuf id buf
+getMsg :: (Read a) => Src -> Id -> MsgBuf -> IO a
+getMsg src id buf = do
+  mvar <- lookupMsgBuf src id buf
   read <$> takeMVar mvar
 
 server :: MsgBuf -> Server API
 server buf = handler
   where
-    handler :: Id -> String -> Handler NoContent
-    handler id msg = do
-      liftIO $ logMsg ("Received " ++ msg ++ " with id " ++ show id)
-      liftIO $ putMsg msg id buf
+    handler :: Src -> Id -> String -> Handler NoContent
+    handler src id msg = do
+      liftIO $ logMsg ("Received " ++ msg ++ " from " ++ src ++ " with sequence number " ++ show id)
+      liftIO $ putMsg msg src id buf
       return NoContent
 
 -----------------------------------------------------------
@@ -124,21 +127,22 @@ data HttpCtx = HttpCtx {
 }
 
 newtype Http a = Http { unHttp :: ReaderT HttpCtx IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx, MonadAsync)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx)
 
 instance Network Http where
-  send dst id a = do
-    liftIO $ logMsg ("Send " ++ show a ++ " to " ++ show dst ++ " with id " ++ show id)
+  send dst src id a = do
+    liftIO $ logMsg ("Send " ++ show a ++ " to " ++ show dst ++ " with src " ++ src ++ " and id " ++ show id)
     HttpCtx { cfg, mgr } <- ask
-    liftIO $ do
-      let env = mkClientEnv mgr (locToUrl cfg ! dst)
-      res <- runClientM (sendServant id (show a)) env
+    let env = mkClientEnv mgr (locToUrl cfg ! dst)
+    async $ do
+      res <- runClientM (sendServant src id (show a)) env
       either (logMsg . show) (void . return) res -- TODO: consider doing retry
 
-  recv dst id = do
-    liftIO $ logMsg ("Wait for a message from " ++ show dst ++ " with id " ++ show id)
+  recv src id = do
+    liftIO $ logMsg ("Wait for a message from " ++ show src ++ " with id " ++ show id)
     HttpCtx {buf} <- ask
-    liftIO $ read <$> getMsg id buf
+    async $ do
+      read <$> getMsg src id buf
 
 -- the top-most function
 -- the second argument specifies the port to listen for incoming messages
@@ -154,7 +158,12 @@ runHttp cfg self m = do
   let app = serve api (server buf)
   _ <- forkIO $ run serverPort app
 
-  runReaderT (unHttp m) ctx
+  a <- runReaderT (unHttp m) ctx
+
+  -- wait for pending sends to finish   TODO: collect these sends and wait on them
+  -- also give the server thread some time to send back response (this probabaly can't be fixed)
+  threadDelay 5_000_000
+  return a
 
   -- TODO: kill the server thread?
 
