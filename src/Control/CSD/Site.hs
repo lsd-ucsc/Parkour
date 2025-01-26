@@ -5,6 +5,10 @@ module Control.CSD.Site where
 import Data.Kind
 
 data Site (a :: Type)
+data Enclave (a :: Type)
+data (a :: Type) ⊕ (b :: Type)
+
+infixr 1 ⊕
 
 class WellFormed a
 instance WellFormed (Site a)
@@ -24,6 +28,7 @@ class Perm f where
 type family I i a where
   I i (Site a) = i a
   I i (a, b)   = (I i a, I i b)
+  I i (Either a b)  = Either (I i a) (I i b)
 
 -- interpretations of a CSD
 newtype Interp i m a b = Interp { runInterp :: I i a -> m (I i b) }

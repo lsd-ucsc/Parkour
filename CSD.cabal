@@ -19,6 +19,7 @@ library
         Control.CSD.Site
         Control.CSD.Network
         Control.CSD.CSD
+        Control.CSD.ChoiceCSD
     other-modules:
         Control.CSD.Old
     build-depends:

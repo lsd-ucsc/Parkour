@@ -6,6 +6,7 @@ import Control.Concurrent.Async.Lifted
 import Control.CSD.Network
 import Control.CSD.Site
 import Control.CSD.CSD
+import Control.CSD.ChoiceCSD
 import System.Environment
 
 priceOf :: String -> Int
@@ -97,20 +98,20 @@ priceOf' s      = Left s
 --                   |/             |     |
 --                  < Int         < ()   < ()
 
--- bookstore3 :: CSD (Kleisli IO) (Site String, (Site (), Site ())) (Site Int, (Site (), Site ()))
--- bookstore3 =
---       (perf (\s -> return ((), s)) >>> fork) *** noop *** noop
---   >>> Perm (Trans AssocR (CongL AssocL))
---   >>> noop *** (joinL >>> perf (\(t, _) -> return t)) *** noop
---   >>> noop *** perf (\t -> return (priceOf' t)) *** noop
---   >>> noop *** Splt *** noop
---   >>> noop *** Ntfy
---   >>> noop *** Brch bookstore1 (noop *** noop)
---   >>> noop *** Idem
---   >>> noop *** perf (\p -> return (p, ())) *** noop
---   >>> noop *** fork *** noop
---   >>> Perm (Trans AssocL (Trans (CongR AssocL) AssocR))
---   >>> (joinR >>> perf (\(_, p) -> return p)) *** noop *** noop
+bookstore3 :: Int -> (ChoiceCSD f) => f (Site (), (Site (), Site ())) (Site (), (Site (), Site ()))
+bookstore3 0 = noop *** noop *** noop
+bookstore3 n =
+      (perf (\_ -> putStrLn ">>> Type in the title of the book:" >> ((),) <$> getLine) >>> forkR) *** noop *** noop
+  >>> trans assocR (congL assocL)
+  >>> noop *** (joinL >>> perf (\(_, t) -> return t)) *** noop
+  >>> noop *** perf (\t -> return (priceOf' t)) *** noop
+  >>> noop *** split
+  >>> noop *** branch bookstore1' (noop *** noop)
+  >>> noop *** idem
+  >>> noop *** (perf (\p -> return ((), p)) >>> forkL) *** noop
+  >>> trans assocL (trans (congR assocL) assocR)
+  >>> (joinR >>> perf (\(_, p) -> print p)) *** noop *** noop
+  >>> bookstore3 (n - 1)
 
 main :: IO ()
 main = do
@@ -161,19 +162,39 @@ main = do
       let prog = project bookstore2 (Peer s1 "buyer", (Self s2, Peer s3 "seller"))
       ((Peer s1 _, Peer s4 _), (Self s2,  Peer s3 _)) <- runHttp config 40003 prog
       mapM_ wait [s1, s2, s3, s4]
-    -- ["bookstore3"] -> do
-    --   s1 <- async (putStrLn "Type in the title of the book:" >> getLine)
-    --   s2 <- async (return ())
-    --   s3 <- async (return ())
-    --   let prog = interpAsynced runKleisli bookstore3
-    --   (s1', (s2', s3')) <- prog (s1, (s2, s3))
-    --   s1'' <- async (wait s1' >>= print)
-    --   mapM_ wait [s1'', s2', s3']
+    ["bookstore3"] -> do
+      s1 <- async (return ())
+      s2 <- async (return ())
+      s3 <- async (return ())
+      (s1', (s2', s3')) <- runCSD (bookstore3 3) (s1, (s2, s3))
+      mapM_ wait [s1', s2', s3']
+    ["bookstore3", "buyer"] -> do
+      s1 <- async (return ())
+      s2 <- async (return ())
+      s3 <- async (return ())
+      let prog = project (bookstore3 3) (Self s1, (Peer s2 "seller", Peer s3 "seller2"))
+      (Self s1', (Peer s2' _, Peer s3' _)) <- runHttp config 40001 prog
+      mapM_ wait [s1', s2', s3']
+    ["bookstore3", "seller"] -> do
+      s1 <- async (return ())
+      s2 <- async (return ())
+      s3 <- async (return ())
+      let prog = project (bookstore3 3) (Peer s1 "buyer", (Self s2, Peer s3 "seller2"))
+      (Peer s1' _, (Self s2', Peer s3' _)) <- runHttp config 40002 prog
+      mapM_ wait [s1', s2', s3']
+    ["bookstore3", "seller2"] -> do
+      s1 <- async (return ())
+      s2 <- async (return ())
+      s3 <- async (return ())
+      let prog = project (bookstore3 3) (Peer s1 "buyer", (Peer s2 "seller", Self s3))
+      (Peer s1' _, (Peer s2' _, Self s3')) <- runHttp config 40004 prog
+      mapM_ wait [s1', s2', s3']
     _ -> putStrLn "Unknown command-line arguments"
   where
     config :: HttpConfig
     config = mkHttpConfig
       [ ("buyer", ("localhost", 40001)),
         ("seller", ("localhost", 40002)),
-        ("buyer2", ("localhost", 40003))
+        ("buyer2", ("localhost", 40003)),
+        ("seller2", ("localhost", 40004))
       ]

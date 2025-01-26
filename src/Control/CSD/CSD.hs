@@ -60,8 +60,8 @@ instance CSD (Interp Async IO) where
   join     = Interp $ \(a, b) -> async ((,) <$> wait a <*> wait b)
 
 -- a special case of the above instance
-runCSD :: (forall f. (CSD f) => f a b) -> I Async a -> IO (I Async b)
-runCSD f = runInterp (f @(Interp Async IO))
+runCSD :: Interp Async IO a b -> I Async a -> IO (I Async b)
+runCSD = runInterp
 
 -- ** Distributed Semantics
 
@@ -83,10 +83,10 @@ instance CSD (InterpT Located Http (StateT Id)) where
     (Self ab) -> (,) <$> (Self <$> lift (async (fst <$> wait ab))) <*> (Self <$> lift (async (snd <$> wait ab)))
     (Peer a loc) -> return (Peer a loc, Peer a loc)
   join = InterpT $ \case
-    (Self a, Self b) -> Self <$> lift (async ((,) <$> wait a <*> wait b))
+    (Self a, Self b) -> inc >> Self <$> lift (async ((,) <$> wait a <*> wait b))
     (Self a, Peer _ loc) -> Self <$> do { x <- inc; lift (async ((,) <$> wait a <*> recv loc x)) }
     (Peer a loc, Self b) -> Peer <$> do { x <- inc; lift (async (wait a >> wait b >>= send loc x)) } <*> pure loc
     (Peer a loc, Peer _ _) -> inc >> return (Peer a loc) -- the right one is the incoming site
 
-project :: (forall f. (CSD f) => f a b) -> I Located a -> Http (I Located b)
-project f a = evalStateT (runInterpT (f @(InterpT Located Http (StateT Int))) a) 0
+project :: InterpT Located Http (StateT Id) a b -> I Located a -> Http (I Located b)
+project f a = evalStateT (runInterpT f a) 0
