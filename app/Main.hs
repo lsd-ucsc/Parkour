@@ -68,7 +68,7 @@ bookstore2 :: (CSD f) => f (Site (), (Site (), Site ())) ((Site (), Site ()), (S
 bookstore2 =
       noop *** noop *** (perf (\_ -> return ((), ())) >>> fork)
   >>> perm1
-  >>> loop (bookstore1 *** bookstore1)
+  >>> loopN 3 (bookstore1 *** bookstore1)
   where
     perm1 :: (CSD f) => f (Site (), (Site (), (Site (), Site ()))) ((Site (), Site ()), (Site (), Site ()))
     perm1 = trans (congL assocL) (trans (congL swap) assocL)
@@ -145,7 +145,7 @@ main = do
     ["bookstore2", "buyer"] -> do
       s1 <- async (return ())
       let prog = project bookstore2 (Self "buyer" s1, (Peer "buyer2", Peer "seller"))
-      ((Self _ s1, Peer _), (Peer _, Peer _)) <- runHttp config 40001 prog
+      ((Self _ s1, Peer _), (Peer _, Peer _)) <- runHttpDebug config 40001 prog
       mapM_ wait [s1]
     ["bookstore2", "seller"] -> do
       s3 <- async (return ())

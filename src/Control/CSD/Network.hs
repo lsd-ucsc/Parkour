@@ -83,12 +83,12 @@ getMsg src id buf = do
   mvar <- lookupMsgBuf src id buf
   read <$> takeMVar mvar
 
-server :: MsgBuf -> Server API
-server buf = handler
+server :: Bool -> MsgBuf -> Server API
+server debug buf = handler
   where
     handler :: Src -> Id -> String -> Handler NoContent
     handler src id msg = do
-      liftIO $ logMsg ("Received " ++ msg ++ " from " ++ src ++ " with sequence number " ++ show id)
+      when debug (liftIO $ logMsg ("Received " ++ msg ++ " from " ++ src ++ " with sequence number " ++ show id))
       liftIO $ putMsg msg src id buf
       return NoContent
 
@@ -122,6 +122,7 @@ mkHttpConfig = HttpConfig . HM.fromList . fmap (fmap f)
 -- Put everything together, the `Http` monad
 
 data HttpCtx = HttpCtx {
+  debug :: Bool,
   cfg :: HttpConfig,
   mgr :: Http.Client.Manager,
   buf :: MsgBuf
@@ -136,32 +137,32 @@ instance Network Http where
     send' dst src id a
 
   send' dst src id a = do
-    HttpCtx { cfg, mgr } <- ask
+    HttpCtx { debug, cfg, mgr } <- ask
     let env = mkClientEnv mgr (locToUrl cfg ! dst)
     async $ do
       a <- wait a
-      liftIO $ logMsg ("Send " ++ show a ++ " to " ++ dst ++ " with id " ++ show id)
+      when debug (liftIO $ logMsg ("Send " ++ show a ++ " to " ++ dst ++ " with id " ++ show id))
       res <- runClientM (sendServant src id (show a)) env
       either (logMsg . show) (void . return) res -- TODO: consider doing retry
 
   recv src id = do
-    liftIO $ logMsg ("Wait for a message from " ++ src ++ " with id " ++ show id)
-    HttpCtx {buf} <- ask
+    HttpCtx {debug, buf} <- ask
+    when debug (liftIO $ logMsg ("Wait for a message from " ++ src ++ " with id " ++ show id))
     async $ do
       read <$> getMsg src id buf
 
 -- the top-most function
 -- the second argument specifies the port to listen for incoming messages
-runHttp :: HttpConfig -> Port -> Http a -> IO a
-runHttp cfg self m = do
+runHttpTop :: HttpConfig -> Port -> Bool -> Http a -> IO a
+runHttpTop cfg self debug m = do
   -- initialization
   mgr <- Http.Client.newManager Http.Client.defaultManagerSettings
   buf <- liftIO emptyMsgBuf
-  let ctx = HttpCtx { cfg, mgr, buf }
+  let ctx = HttpCtx { debug, cfg, mgr, buf }
 
   -- start the server thread
   let serverPort = self
-  let app = serve api (server buf)
+  let app = serve api (server debug buf)
   _ <- forkIO $ run serverPort app
 
   a <- runReaderT (unHttp m) ctx
@@ -175,3 +176,9 @@ runHttp cfg self m = do
 
 logMsg :: String -> IO ()
 logMsg msg = putStrLn ("* log: " ++ msg)
+
+runHttp :: HttpConfig -> Port -> Http a -> IO a
+runHttp cfg self= runHttpTop cfg self False
+
+runHttpDebug :: HttpConfig -> Port -> Http a -> IO a
+runHttpDebug cfg self = runHttpTop cfg self True
