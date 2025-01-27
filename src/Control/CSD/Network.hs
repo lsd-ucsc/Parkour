@@ -27,6 +27,7 @@ type Id = Int
 
 class (Monad m) => Network m where
   send :: (Show a) => Rmt -> Src -> Id -> a -> m (Async ())
+  send' :: (Show a) => Rmt -> Src -> Id -> Async a -> m (Async ())
   recv :: (Read a) => Src -> Id -> m (Async a)
 
 ---------------------------------------------------------------------------------------------------
@@ -131,15 +132,20 @@ newtype Http a = Http { unHttp :: ReaderT HttpCtx IO a }
 
 instance Network Http where
   send dst src id a = do
-    liftIO $ logMsg ("Send " ++ show a ++ " to " ++ show dst ++ " with src " ++ src ++ " and id " ++ show id)
+    a <- async (return a)
+    send' dst src id a
+
+  send' dst src id a = do
     HttpCtx { cfg, mgr } <- ask
     let env = mkClientEnv mgr (locToUrl cfg ! dst)
     async $ do
+      a <- wait a
+      liftIO $ logMsg ("Send " ++ show a ++ " to " ++ dst ++ " with id " ++ show id)
       res <- runClientM (sendServant src id (show a)) env
       either (logMsg . show) (void . return) res -- TODO: consider doing retry
 
   recv src id = do
-    liftIO $ logMsg ("Wait for a message from " ++ show src ++ " with id " ++ show id)
+    liftIO $ logMsg ("Wait for a message from " ++ src ++ " with id " ++ show id)
     HttpCtx {buf} <- ask
     async $ do
       read <$> getMsg src id buf

@@ -3,6 +3,8 @@
 
 module Control.CSD.CSD where
 
+import Data.HashMap.Strict (HashMap)
+import Data.HashMap.Strict qualified as HM
 import Control.Concurrent.Async.Lifted
 import Control.CSD.Site
 import Control.CSD.Network
@@ -66,27 +68,49 @@ runCSD = runInterp
 -- ** Distributed Semantics
 
 data Located a where
-  Self :: Async a -> Located a
-  Peer :: Async () -> Loc -> Located a
+  Self :: Loc -> Async a -> Located a
+  Peer :: Loc -> Located a
 
-inc :: (Monad m) => StateT Int m Int
-inc = do { x <- get; put (x + 1); return x }
+inc :: (Monad m) => Loc -> StateT (HashMap Loc Id) m Id
+inc loc = do
+  m <- get
+  let v = HM.findWithDefault 0 loc m
+  put (HM.insert loc (v + 1) m)
+  return v
 
-instance CSD (InterpT Located Http (StateT Id)) where
+instance CSD (InterpT Located Http (StateT (HashMap Loc Id))) where
   perf act = InterpT $ \case
-    (Self a) -> Self <$> lift (async (wait a >>= liftIO . act))
-    (Peer a loc) -> return (Peer a loc)
+    (Self loc a) -> do
+      a <- lift (async (wait a >>= act))
+      return (Self loc a)
+    (Peer loc) -> return (Peer loc)
+
   -- the following two cases are exactly the same as the centralized semantics
   seq f g = InterpT $ \a -> runInterpT f a >>= runInterpT g
   par  f g = InterpT $ \(a, b) -> (,) <$> runInterpT f a <*> runInterpT g b
-  fork = InterpT $ \case
-    (Self ab) -> (,) <$> (Self <$> lift (async (fst <$> wait ab))) <*> (Self <$> lift (async (snd <$> wait ab)))
-    (Peer a loc) -> return (Peer a loc, Peer a loc)
-  join = InterpT $ \case
-    (Self a, Self b) -> inc >> Self <$> lift (async ((,) <$> wait a <*> wait b))
-    (Self a, Peer _ loc) -> Self <$> do { x <- inc; lift (async ((,) <$> wait a <*> recv loc x)) }
-    (Peer a loc, Self b) -> Peer <$> do { x <- inc; lift (async (wait a >> wait b >>= send loc x)) } <*> pure loc
-    (Peer a loc, Peer _ _) -> inc >> return (Peer a loc) -- the right one is the incoming site
 
-project :: InterpT Located Http (StateT Id) a b -> I Located a -> Http (I Located b)
-project f a = evalStateT (runInterpT f a) 0
+  fork = InterpT $ \case
+    (Self loc ab) -> do
+      a <- lift (async (fst <$> wait ab))
+      b <- lift (async (snd <$> wait ab))
+      return (Self loc a, Self loc b)
+    (Peer loc) -> return (Peer loc, Peer loc)
+
+  -- remember join is left biased
+  join = InterpT $ \case
+    (Self loc a, Self _ b) -> do
+      ab <- async ((,) <$> wait a <*> wait b)
+      return (Self loc ab)
+    (Self dst a, Peer src) -> do
+      id <- inc src
+      b <- lift (recv src id)
+      ab <- async ((,) <$> wait a <*> wait b)
+      return (Self dst ab)
+    (Peer dst, Self src b) -> do
+      id <- inc dst
+      lift (send' dst src id b) -- there's a dangling Async here
+      return (Peer dst)
+    (Peer a, Peer _) -> return (Peer a)
+
+project :: InterpT Located Http (StateT (HashMap Loc Id)) a b -> I Located a -> Http (I Located b)
+project f a = evalStateT (runInterpT f a) HM.empty

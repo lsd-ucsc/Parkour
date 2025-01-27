@@ -56,8 +56,13 @@ bookstore1' =
 -- When acutally running this choreography, we expect the *physical* seller would take the
 -- role of both logical seller and run them in parallel.
 
-loop :: (CSD f) => f a a -> f a a
 loop f = f >>> loop f
+
+loopN :: (CSD f) => Int -> f a a -> f a a
+loopN 0 f = f
+loopN n f
+  | n > 0 = f >>> loopN (n - 1) f
+  | n < 0 = f >>> loopN (n + 1) f
 
 bookstore2 :: (CSD f) => f (Site (), (Site (), Site ())) ((Site (), Site ()), (Site (), Site ()))
 bookstore2 =
@@ -98,9 +103,8 @@ priceOf' s      = Left s
 --                   |/             |     |
 --                  < Int         < ()   < ()
 
-bookstore3 :: Int -> (ChoiceCSD f) => f (Site (), (Site (), Site ())) (Site (), (Site (), Site ()))
-bookstore3 0 = noop *** noop *** noop
-bookstore3 n =
+bookstore3 :: (ChoiceCSD f) => f (Site (), (Site (), Site ())) (Site (), (Site (), Site ()))
+bookstore3 =
       (perf (\_ -> putStrLn ">>> Type in the title of the book:" >> ((),) <$> getLine) >>> forkR) *** noop *** noop
   >>> trans assocR (congL assocL)
   >>> noop *** (joinL >>> perf (\(_, t) -> return t)) *** noop
@@ -111,7 +115,7 @@ bookstore3 n =
   >>> noop *** (perf (\p -> return ((), p)) >>> forkL) *** noop
   >>> trans assocL (trans (congR assocL) assocR)
   >>> (joinR >>> perf (\(_, p) -> print p)) *** noop *** noop
-  >>> bookstore3 (n - 1)
+  >>> loopN 3 bookstore3
 
 main :: IO ()
 main = do
@@ -124,17 +128,14 @@ main = do
       mapM_ wait [s1', s2']
     ["bookstore1", "buyer"] -> do
       s1 <- async (return ())
-      s2 <- async (return ())
-      let prog = project bookstore1 (Self s1, Peer s2 "seller")
-      (Self s1, Peer s2 _) <- runHttp config 40001 prog
-      s1 <- async (wait s1 >>= print)
-      mapM_ wait [s1, s2]
+      let prog = project bookstore1 (Self "buyer" s1, Peer "seller")
+      (Self _ s1, Peer _) <- runHttp config 40001 prog
+      mapM_ wait [s1]
     ["bookstore1", "seller"] -> do
-      s1 <- async (return ())
       s2 <- async (return ())
-      let prog = project bookstore1 (Peer s1 "buyer", Self s2)
-      (Peer s1 _, Self s2) <- runHttp config 40002 prog
-      mapM_ wait [s1, s2]
+      let prog = project bookstore1 (Peer "buyer", Self "seller" s2)
+      (Peer _, Self _ s2) <- runHttp config 40002 prog
+      mapM_ wait [s2]
     ["bookstore2"] -> do
       s1 <- async (return ())
       s2 <- async (return ())
@@ -143,52 +144,40 @@ main = do
       mapM_ wait [s1, s2, s3, s4]
     ["bookstore2", "buyer"] -> do
       s1 <- async (return ())
-      s2 <- async (return ())
-      s3 <- async (return ())
-      let prog = project bookstore2 (Self s1, (Peer s2 "buyer2", Peer s3 "seller"))
-      ((Self s1, Peer s4 _), (Peer s2 _, Peer s3 _)) <- runHttp config 40001 prog
-      mapM_ wait [s1, s2, s3, s4]
+      let prog = project bookstore2 (Self "buyer" s1, (Peer "buyer2", Peer "seller"))
+      ((Self _ s1, Peer _), (Peer _, Peer _)) <- runHttp config 40001 prog
+      mapM_ wait [s1]
     ["bookstore2", "seller"] -> do
-      s1 <- async (return ())
-      s2 <- async (return ())
       s3 <- async (return ())
-      let prog = project bookstore2 (Peer s1 "buyer", (Peer s2 "buyer2", Self s3))
-      ((Peer s1 _, Self s4), (Peer s2 _,  Self s3)) <- runHttp config 40002 prog
-      mapM_ wait [s1, s2, s3, s4]
+      let prog = project bookstore2 (Peer "buyer", (Peer "buyer2", Self "seller" s3))
+      ((Peer _, Self _ s4), (Peer _,  Self _ s3)) <- runHttp config 40002 prog
+      mapM_ wait [s3, s4]
     ["bookstore2", "buyer2"] -> do
-      s1 <- async (return ())
       s2 <- async (return ())
-      s3 <- async (return ())
-      let prog = project bookstore2 (Peer s1 "buyer", (Self s2, Peer s3 "seller"))
-      ((Peer s1 _, Peer s4 _), (Self s2,  Peer s3 _)) <- runHttp config 40003 prog
-      mapM_ wait [s1, s2, s3, s4]
+      let prog = project bookstore2 (Peer "buyer", (Self "buyer2" s2, Peer "seller"))
+      ((Peer _, Peer _), (Self _ s2,  Peer _)) <- runHttp config 40003 prog
+      mapM_ wait [s2]
     ["bookstore3"] -> do
       s1 <- async (return ())
       s2 <- async (return ())
       s3 <- async (return ())
-      (s1', (s2', s3')) <- runCSD (bookstore3 3) (s1, (s2, s3))
+      (s1', (s2', s3')) <- runCSD bookstore3 (s1, (s2, s3))
       mapM_ wait [s1', s2', s3']
     ["bookstore3", "buyer"] -> do
       s1 <- async (return ())
-      s2 <- async (return ())
-      s3 <- async (return ())
-      let prog = project (bookstore3 3) (Self s1, (Peer s2 "seller", Peer s3 "seller2"))
-      (Self s1', (Peer s2' _, Peer s3' _)) <- runHttp config 40001 prog
-      mapM_ wait [s1', s2', s3']
+      let prog = project bookstore3 (Self "buyer" s1, (Peer "seller", Peer "seller2"))
+      (Self _ s1', (Peer _, Peer _)) <- runHttp config 40001 prog
+      mapM_ wait [s1']
     ["bookstore3", "seller"] -> do
-      s1 <- async (return ())
       s2 <- async (return ())
-      s3 <- async (return ())
-      let prog = project (bookstore3 3) (Peer s1 "buyer", (Self s2, Peer s3 "seller2"))
-      (Peer s1' _, (Self s2', Peer s3' _)) <- runHttp config 40002 prog
-      mapM_ wait [s1', s2', s3']
+      let prog = project bookstore3 (Peer "buyer", (Self "seller" s2, Peer "seller2"))
+      (Peer _, (Self _ s2', Peer _)) <- runHttp config 40002 prog
+      mapM_ wait [s2']
     ["bookstore3", "seller2"] -> do
-      s1 <- async (return ())
-      s2 <- async (return ())
       s3 <- async (return ())
-      let prog = project (bookstore3 3) (Peer s1 "buyer", (Peer s2 "seller", Self s3))
-      (Peer s1' _, (Peer s2' _, Self s3')) <- runHttp config 40004 prog
-      mapM_ wait [s1', s2', s3']
+      let prog = project bookstore3 (Peer "buyer", (Peer "seller", Self "seller2" s3))
+      (Peer _, (Peer _, Self _ s3')) <- runHttp config 40004 prog
+      mapM_ wait [s3']
     _ -> putStrLn "Unknown command-line arguments"
   where
     config :: HttpConfig
