@@ -1,5 +1,5 @@
 cabal-version:      3.0
-name:               CSD
+name:               Parkour
 version:            0.1.0.0
 license:            BSD-3-Clause
 license-file:       LICENSE
@@ -16,12 +16,8 @@ library
     hs-source-dirs:   src
     exposed-modules:
         Control.Concurrent.Async.Lifted
-        Control.CSD.Site
         Control.CSD.Network
         Control.CSD.CSD
-        Control.CSD.ChoiceCSD
-    other-modules:
-        Control.CSD.Old
     build-depends:
         async                ^>= 2.2.5,
         base                 ^>= 4.17.2.1,
@@ -34,11 +30,11 @@ library
         unordered-containers ^>= 0.2.19.1,
         warp                 ^>= 3.3.25,
 
-executable CSD-test
+executable Parkour-test
     import:           warnings
     default-language: GHC2021
     hs-source-dirs:   app
     main-is:          Main.hs
     build-depends:
         base ^>=4.17.2.1,
-        CSD
+        Parkour

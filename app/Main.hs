@@ -2,17 +2,23 @@
 
 module Main where
 
+import Control.Arrow (Kleisli (..))
 import Control.Concurrent.Async.Lifted
 import Control.CSD.Network
-import Control.CSD.Site
 import Control.CSD.CSD
-import Control.CSD.ChoiceCSD
+import Data.Proxy
+import Data.Typeable
 import System.Environment
 
 priceOf :: String -> Int
 priceOf "TaPL" = 80
 priceOf "PFPL" = 100
 priceOf _      = 999_999_999
+
+data Buyer
+data Buyer2
+data Seller
+data Seller2
 
 -- Example 1: Basic Bookstore
 --
@@ -28,25 +34,23 @@ priceOf _      = 999_999_999
 --                   |/            |
 --                 < Int          < ()
 
-bookstore1 :: (CSD f) => f (Site (), Site ()) (Site (), Site ())
+bookstore1 :: forall buyer seller. (Typeable buyer, Typeable seller) =>
+              CSD (Kleisli IO) (() @ buyer, () @ seller) (() @ buyer, () @ seller)
 bookstore1 =
-      (perf (\_ -> putStrLn ">>> Type in the title of the book:" >> ((),) <$> getLine) >>> forkR) *** noop
-  >>> assocR
-  >>> noop *** (joinL >>> perf (\(_, t) -> return t))
-  >>> noop *** perf (\t -> return (priceOf t, ()))
-  >>> noop *** fork
-  >>> assocL
-  >>> (joinR >>> perf (\(_, p) -> print p)) *** noop
+  (perf (\_ -> putStrLn ">>> Type in the title of the book:" >> ((),) <$> getLine) >>> Fork) *** Noop >>> 
+  AssocR                                                                                              >>> 
+  Noop *** ((To *** Noop) >>> Join >>> perf (\(t, _) -> return (priceOf t, ())) >>> Fork)             >>> 
+  AssocL                                                                                              >>> 
+  ((Noop *** To) >>> Join >>> perf (\(_, p) -> print p)) *** Noop
 
-bookstore1' :: (CSD f) => f (Site String, Site ()) (Site Int, Site ())
+bookstore1' :: forall buyer seller. (Typeable buyer, Typeable seller) => 
+               CSD (Kleisli IO) (String @ buyer, () @ seller) (Int @ buyer, () @ seller)
 bookstore1' =
-      (perf (\s -> return ((), s)) >>> fork) *** noop
-  >>> assocR
-  >>> noop *** (joinL >>> perf (\(_, t) -> return t))
-  >>> noop *** perf (\t -> return (priceOf t, ()))
-  >>> noop *** fork
-  >>> assocL
-  >>> (joinR >>> perf (\(_, p) -> return p)) *** noop
+  (perf (\t -> return ((), t)) >>> Fork) *** Noop                                         >>> 
+  AssocR                                                                                  >>> 
+  Noop *** ((To *** Noop) >>> Join >>> perf (\(t, _) -> return (priceOf t, ())) >>> Fork) >>> 
+  AssocL                                                                                  >>> 
+  ((Noop *** To) >>> Join >>> perf (\(_, p) -> return p)) *** Noop
 
 -- Example 2: Parallel Bookstore
 --
@@ -56,22 +60,17 @@ bookstore1' =
 -- When acutally running this choreography, we expect the *physical* seller would take the
 -- role of both logical seller and run them in parallel.
 
-loop f = f >>> loop f
-
-loopN :: (CSD f) => Int -> f a a -> f a a
-loopN 0 f = f
+loopN :: Int -> CSD f a a -> CSD f a a
 loopN n f
+  | n == 0 = Noop
   | n > 0 = f >>> loopN (n - 1) f
   | n < 0 = f >>> loopN (n + 1) f
 
-bookstore2 :: (CSD f) => f (Site (), (Site (), Site ())) ((Site (), Site ()), (Site (), Site ()))
+bookstore2 :: CSD (Kleisli IO) (() @ Buyer, (() @ Buyer2, () @ Seller)) ((() @ Buyer, () @ Seller), (() @ Buyer2, () @ Seller))
 bookstore2 =
-      noop *** noop *** (perf (\_ -> return ((), ())) >>> fork)
-  >>> perm1
+      Noop *** Noop *** (perf (\_ -> return ((), ())) >>> Fork)
+  >>> (CongL AssocL >>> CongL Swap >>> AssocL)
   >>> loopN 3 (bookstore1 *** bookstore1)
-  where
-    perm1 :: (CSD f) => f (Site (), (Site (), (Site (), Site ()))) ((Site (), Site ()), (Site (), Site ()))
-    perm1 = trans (congL assocL) (trans (congL swap) assocL)
 
 priceOf' :: String -> Either String Int
 priceOf' "HoTT" = Right 123
@@ -103,18 +102,19 @@ priceOf' s      = Left s
 --                   |/             |     |
 --                  < Int         < ()   < ()
 
-bookstore3 :: (ChoiceCSD f) => f (Site (), (Site (), Site ())) (Site (), (Site (), Site ()))
+bookstore3 :: CSD (Kleisli IO) (() @ Buyer, (() @ Seller, () @ Seller2)) (() @ Buyer, (() @ Seller, () @ Seller2))
 bookstore3 =
-      (perf (\_ -> putStrLn ">>> Type in the title of the book:" >> ((),) <$> getLine) >>> forkR) *** noop *** noop
-  >>> trans assocR (congL assocL)
-  >>> noop *** (joinL >>> perf (\(_, t) -> return t)) *** noop
-  >>> noop *** perf (\t -> return (priceOf' t)) *** noop
-  >>> noop *** split
-  >>> noop *** branch bookstore1' (noop *** noop)
-  >>> noop *** idem
-  >>> noop *** (perf (\p -> return ((), p)) >>> forkL) *** noop
-  >>> trans assocL (trans (congR assocL) assocR)
-  >>> (joinR >>> perf (\(_, p) -> print p)) *** noop *** noop
+      (perf (\_ -> putStrLn ">>> Type in the title of the book:" >> ((),) <$> getLine) >>> Fork) *** Noop *** Noop
+  >>> (AssocR >>> CongL AssocL)
+  >>> Noop *** ((To *** Noop) >>> Join >>> perf (\(t, _) -> return t)) *** Noop
+  >>> Noop *** perf (\t -> return (priceOf' t)) *** Noop
+  >>> Noop *** Split *** Noop
+  >>> Noop *** Notify @Seller
+  >>> Noop *** Branch bookstore1' Noop
+  >>> Noop *** Idem
+  >>> Noop *** (perf (\p -> return (p, ())) >>> Fork) *** Noop
+  >>> (AssocL >>> CongR AssocL >>> AssocR)
+  >>> ((Noop *** To) >>> Join >>> perf (\(_, p) -> print p)) *** Noop *** Noop
   >>> loopN 3 bookstore3
 
 main :: IO ()
@@ -124,66 +124,66 @@ main = do
     ["bookstore1"] -> do
       s1 <- async (return ())
       s2 <- async (return ())
-      (s1', s2') <- runCSD bookstore1 (s1, s2)
+      (s1', s2') <- runCSD runKleisli (bookstore1 @Buyer @Seller) (s1, s2)
       mapM_ wait [s1', s2']
     ["bookstore1", "buyer"] -> do
       s1 <- async (return ())
-      let prog = project bookstore1 (Self "buyer" s1, Peer "seller")
-      (Self _ s1, Peer _) <- runHttp config 40001 prog
+      let prog = project @Buyer runKleisli (bookstore1 @Buyer @Seller) (s1, absent)
+      (s1, _) <- runHttpDebug config 40001 prog
       mapM_ wait [s1]
     ["bookstore1", "seller"] -> do
       s2 <- async (return ())
-      let prog = project bookstore1 (Peer "buyer", Self "seller" s2)
-      (Peer _, Self _ s2) <- runHttp config 40002 prog
+      let prog = project @Seller runKleisli (bookstore1 @Buyer @Seller) (absent, s2)
+      (_, s2) <- runHttpDebug config 40002 prog
       mapM_ wait [s2]
     ["bookstore2"] -> do
       s1 <- async (return ())
       s2 <- async (return ())
       s3 <- async (return ())
-      ((s1, s4), (s2, s3)) <- runCSD bookstore2 (s1, (s2, s3))
+      ((s1, s4), (s2, s3)) <- runCSD runKleisli bookstore2 (s1, (s2, s3))
       mapM_ wait [s1, s2, s3, s4]
     ["bookstore2", "buyer"] -> do
       s1 <- async (return ())
-      let prog = project bookstore2 (Self "buyer" s1, (Peer "buyer2", Peer "seller"))
-      ((Self _ s1, Peer _), (Peer _, Peer _)) <- runHttpDebug config 40001 prog
+      let prog = project @Buyer runKleisli bookstore2 (s1, (absent, absent))
+      ((s1, _), (_, _)) <- runHttpDebug config 40001 prog
       mapM_ wait [s1]
     ["bookstore2", "seller"] -> do
       s3 <- async (return ())
-      let prog = project bookstore2 (Peer "buyer", (Peer "buyer2", Self "seller" s3))
-      ((Peer _, Self _ s4), (Peer _,  Self _ s3)) <- runHttp config 40002 prog
+      let prog = project @Seller runKleisli bookstore2 (absent, (absent, s3))
+      ((_, s4), (_, s3)) <- runHttp config 40002 prog
       mapM_ wait [s3, s4]
     ["bookstore2", "buyer2"] -> do
       s2 <- async (return ())
-      let prog = project bookstore2 (Peer "buyer", (Self "buyer2" s2, Peer "seller"))
-      ((Peer _, Peer _), (Self _ s2,  Peer _)) <- runHttp config 40003 prog
+      let prog = project @Buyer2 runKleisli bookstore2 (absent, (s2, absent))
+      ((_, _), (s2, _)) <- runHttp config 40003 prog
       mapM_ wait [s2]
     ["bookstore3"] -> do
       s1 <- async (return ())
       s2 <- async (return ())
       s3 <- async (return ())
-      (s1', (s2', s3')) <- runCSD bookstore3 (s1, (s2, s3))
+      (s1', (s2', s3')) <- runCSD runKleisli bookstore3 (s1, (s2, s3))
       mapM_ wait [s1', s2', s3']
     ["bookstore3", "buyer"] -> do
       s1 <- async (return ())
-      let prog = project bookstore3 (Self "buyer" s1, (Peer "seller", Peer "seller2"))
-      (Self _ s1', (Peer _, Peer _)) <- runHttp config 40001 prog
+      let prog = project @Buyer runKleisli bookstore3 (s1, (absent, absent))
+      (s1', (_, _)) <- runHttp config 40001 prog
       mapM_ wait [s1']
     ["bookstore3", "seller"] -> do
       s2 <- async (return ())
-      let prog = project bookstore3 (Peer "buyer", (Self "seller" s2, Peer "seller2"))
-      (Peer _, (Self _ s2', Peer _)) <- runHttp config 40002 prog
+      let prog = project @Seller runKleisli bookstore3 (absent, (s2, absent))
+      (_, (s2', _)) <- runHttp config 40002 prog
       mapM_ wait [s2']
     ["bookstore3", "seller2"] -> do
       s3 <- async (return ())
-      let prog = project bookstore3 (Peer "buyer", (Peer "seller", Self "seller2" s3))
-      (Peer _, (Peer _, Self _ s3')) <- runHttp config 40004 prog
+      let prog = project @Seller2 runKleisli bookstore3 (absent, (absent, s3))
+      (_, (_, s3')) <- runHttp config 40004 prog
       mapM_ wait [s3']
     _ -> putStrLn "Unknown command-line arguments"
   where
     config :: HttpConfig
     config = mkHttpConfig
-      [ ("buyer", ("localhost", 40001)),
-        ("seller", ("localhost", 40002)),
-        ("buyer2", ("localhost", 40003)),
-        ("seller2", ("localhost", 40004))
+      [ ("Buyer", ("localhost", 40001)),
+        ("Seller", ("localhost", 40002)),
+        ("Buyer2", ("localhost", 40003)),
+        ("Seller2", ("localhost", 40004))
       ]

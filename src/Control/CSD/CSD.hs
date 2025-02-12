@@ -1,116 +1,246 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 
 module Control.CSD.CSD where
 
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
+import Data.Kind
+import Data.Proxy
+import Data.Typeable
 import Control.Concurrent.Async.Lifted
-import Control.CSD.Site
-import Control.CSD.Network
+import Control.Arrow (Kleisli(..))
+import Control.CSD.Network hiding (Loc)
 import Control.Monad.State hiding (join)
 
-class (Perm f) => CSD f where
+-- * Sites
+
+data (a :: Type) @ (l :: Type)
+
+data Either' ls a b where
+  Left' :: a -> Either' ls a b
+  Right' :: b -> Either' ls a b
+
+-- * Locations
+
+type Loc = Type
+
+reify :: forall l. (Typeable l) => LocTm
+reify = show (typeRep (Proxy :: Proxy l))
+
+eqLoc :: forall l l'. (Typeable l, Typeable l') => Bool
+eqLoc = reify @l == reify @l'
+
+type family In (l :: Type) (ls :: [Type]) :: Constraint where
+  In x (x : xs) = ()
+  In x (y : xs) = In x xs
+
+-- * CSDs
+
+data CSD f a b where
+  -- Permutations
+  Noop   :: CSD f a a
+  Swap   :: CSD f (a, b) (b, a)
+  AssocL :: CSD f (a, (b, c)) ((a, b), c)
+  AssocR :: CSD f ((a, b), c) (a, (b, c))
+  CongL  :: CSD f a b -> CSD f (ctx, a) (ctx, b)
+  CongR  :: CSD f a b -> CSD f (a, ctx) (b, ctx)  
 
   -- Sequence Composition
-  perf :: (a -> IO b) -> f (Site a) (Site b)
-  seq :: f a b -> f b c -> f a c
+  Perf :: (Typeable l) => f a b -> CSD f (a @ l) (b @ l)
+  Seq  :: CSD f a b -> CSD f b c -> CSD f a c
 
-  -- Parallel Composition
-  par :: f a c -> f b d -> f (a, b) (c, d)
-  -- fork/join are right-biased, meaning the right one is the outcoming/incoming site. In some
-  -- cases, which one is the outcoming/incoming site has no effect on the semantics, but if it
-  -- does, consider use directful join/fork and give them specific semantics rather than using
-  -- the default one.
-  fork :: f (Site (a, b)) (Site a, Site b)
-  join :: (Show b, Read b) => f (Site a, Site b) (Site (a, b))
+  -- Parallel Composition (also subsumes arrows)
+  Par  :: CSD f a c -> CSD f b d -> CSD f (a, b) (c, d)
+  Fork :: (Typeable l) => CSD f ((a, b) @ l) (a @ l, b @ l)
+  Join :: (Typeable l) => CSD f (a @ l, b @ l) ((a, b) @ l)
 
-  -- Directful fork/join
-  forkL :: f (Site (a, out)) (Site out, Site a)
-  forkL = fork >>> swap
+  -- Communication
+  To :: forall l l' f a. (Typeable l, Typeable l', Show a, Read a) => 
+        CSD f (a @ l) (a @ l')
 
-  forkR :: f (Site (a, out)) (Site a, Site out)
-  forkR = fork
+  -- Conditionals
+  Split  :: (Typeable l) => CSD f (Either a b @ l) (Either' '[l] (a @ l) (b @ l))
+  Notify :: (Typeable l, Typeable l', In l ls) => 
+            CSD f (Either' ls a b, c @ l') (Either' (l':ls) (a, c @ l') (b, c @ l'))
+  Branch :: CSD f a c -> CSD f b d -> CSD f (Either' ls a b) (Either' ls c d)
+  Idem   :: CSD f (Either' ls a a) a
 
-  joinL :: (Show in', Read in') => f (Site in', Site b) (Site (b, in'))
-  joinL = swap >>> join
+-- Derived operations and syntax sugar
 
-  joinR :: (Show in', Read in') => f (Site a, Site in') (Site (a, in'))
-  joinR = join
+perf :: (Typeable l) => (a -> m b) -> CSD (Kleisli m) (a @ l) (b @ l)
+perf m = Perf (Kleisli m)
 
--- the following operators are named after arrow operators share the same behavior
+-- the following operators are named after arrow operators with similar behaviors
 
 infixr 1 >>>
 infixr 3 ***
 
-(>>>) :: (CSD f) => f a b -> f b c -> f a c
-a >>> b = Control.CSD.CSD.seq a b -- there's a name conflict
+(>>>) :: CSD f a b -> CSD f b c -> CSD f a c
+a >>> b = Seq a b
 
-(***) :: (CSD f) => f a c -> f b d -> f (a, b) (c, d)
-a *** b = par a b
+(***) :: CSD f a c -> CSD f b d -> CSD f (a, b) (c, d)
+a *** b = Par a b
+
+first :: (Typeable l) => 
+         CSD f (b @ l) (c @ l) -> CSD f ((b, d) @ l) ((c, d) @ l)
+first c = 
+  Fork       >>>
+  c *** Noop >>>
+  Join 
 
 ---------------------------------------------------------------------------------------------------
--- * Interpretation
+-- * Interpreations
 
--- ** Centralized Semantics
+type family Asynced a where
+  Asynced (a @ l) = Async a
+  Asynced (a, b) = (Asynced a, Asynced b)
+  Asynced (Either' ls a b) = Either (Asynced a) (Asynced b)
 
-instance CSD (Interp Async IO) where
-  perf act = Interp $ \a -> async (wait a >>= act)
-  seq f g  = Interp $ \a -> runInterp f a >>= runInterp g
-  par f g  = Interp $ \(a, b) -> (,) <$> runInterp f a <*> runInterp g b
-  fork     = Interp $ \ab -> (,) <$> async (fst <$> wait ab) <*> async (snd <$> wait ab)
-  join     = Interp $ \(a, b) -> async ((,) <$> wait a <*> wait b)
+type CentralF a b = Asynced a -> IO (Asynced b)
 
--- a special case of the above instance
-runCSD :: Interp Async IO a b -> I Async a -> IO (I Async b)
-runCSD = runInterp
+-- The Centralized Semantics
 
--- ** Distributed Semantics
+runCSD :: (forall a b. f a b -> a -> IO b) -> CSD f a b -> CentralF a b
+-- permutations
+runCSD _   Noop      = \a -> return a
+runCSD _   Swap      = \(a, b) -> return (b, a)
+runCSD _   AssocL    = \(a, (b, c)) -> return ((a, b), c)
+runCSD _   AssocR    = \((a, b), c) -> return (a, (b, c))
+runCSD hdl (CongL x) = \(ctx, a) -> (ctx,) <$> runCSD hdl x a
+runCSD hdl (CongR x) = \(a, ctx) -> (,ctx) <$> runCSD hdl x a
+-- sequential composition
+runCSD hdl (Perf act) = \a -> async (wait a >>= hdl act)
+runCSD hdl (Seq f g)  = \a -> runCSD hdl f a >>= runCSD hdl g
+-- parallel composition
+runCSD hdl (Par f g)  = \(a, b) -> (,) <$> runCSD hdl f a <*> runCSD hdl g b
+runCSD _   Fork       = \ab -> (,) <$> async (fst <$> wait ab) <*> async (snd <$> wait ab)
+runCSD _   Join       = \(a, b) -> async ((,) <$> wait a <*> wait b)
+-- communication
+runCSD _ To = \a -> return a
+-- conditionals
+runCSD _ Split = \ab -> do
+  ab' <- wait ab
+  case ab' of
+    (Left a)  -> Left <$> async (return a)
+    (Right b) -> Right <$> async (return b)
+runCSD _ Notify = \(ab, c) -> do
+  case ab of 
+    (Left a)  -> return (Left (a, c))
+    (Right b) -> return (Right (b, c))
+runCSD hdl (Branch f g) = \case 
+  (Left a)  -> Left <$> runCSD hdl f a
+  (Right b) -> Right <$> runCSD hdl g b
+runCSD _ Idem = \case
+  (Left a) -> return a
+  (Right b) -> return b
 
-data Located a where
-  Self :: Loc -> Async a -> Located a
-  Peer :: Loc -> Located a
+-- ** The Distributed Semantics
 
-inc :: (Monad m) => Loc -> StateT (HashMap Loc Id) m Id
+absent :: a
+absent = error "Trying to access a value that is elsewhere."
+
+inc :: (Monad m) => LocTm -> StateT (HashMap LocTm Int) m Int
 inc loc = do
   m <- get
   let v = HM.findWithDefault 0 loc m
   put (HM.insert loc (v + 1) m)
   return v
 
-instance CSD (InterpT Located Http (StateT (HashMap Loc Id))) where
-  perf act = InterpT $ \case
-    (Self loc a) -> do
-      a <- lift (async (wait a >>= act))
-      return (Self loc a)
-    (Peer loc) -> return (Peer loc)
+type ProjectedF a b = 
+  forall (t :: Type). (Typeable t) => Proxy t -> Asynced a -> StateT (HashMap LocTm Int) Http (Asynced b)  
 
-  -- the following two cases are exactly the same as the centralized semantics
-  seq f g = InterpT $ \a -> runInterpT f a >>= runInterpT g
-  par  f g = InterpT $ \(a, b) -> (,) <$> runInterpT f a <*> runInterpT g b
+project1 :: (forall a b. f a b -> a -> IO b) -> CSD f a b -> ProjectedF a b
+-- permutations
+project1 _   Noop      _ = \a -> return a
+project1 _   Swap      _ = \(a, b) -> return (b, a)
+project1 _   AssocL    _ = \(a, (b, c)) -> return ((a, b), c)
+project1 _   AssocR    _ = \((a, b), c) -> return (a, (b, c))
+project1 hdl (CongL x) t = \(ctx, a) -> (ctx,) <$> project1 hdl x t a
+project1 hdl (CongR x) t = \(a, ctx) -> (,ctx) <$> project1 hdl x t a
+-- sequential composition
+project1 hdl (Perf @l act) (_ :: Proxy t)
+  | reify @l == reify @t = \a -> async (wait a >>= hdl act)
+  | otherwise = \_ -> return absent
+project1 hdl (Seq f g) t = \a -> project1 hdl f t a >>= project1 hdl g t
+-- parallel composition
+project1 hdl (Par f g) t = \(a, b) -> (,) <$> project1 hdl f t a <*> project1 hdl g t b
+project1 _ (Fork @l) (_ :: Proxy t) 
+  | reify @l == reify @t = \ab -> (,) <$> async (fst <$> wait ab) <*> async (snd <$> wait ab)
+  | otherwise = \_ -> return (absent, absent)
+project1 _ (Join @l) (_ :: Proxy t)
+  | reify @l == reify @t = \(a, b) -> async ((,) <$> wait a <*> wait b)
+  | otherwise = \_ -> return absent
+-- communication  
+project1 _ (To @s @r) (_ :: Proxy t)
+  | reify @s == reify @r = return 
+  | reify @t == reify @s = \a -> do
+    x <- inc (reify @r)
+    lift $ send' (reify @r) (reify @s) x a -- there's dangling Async there
+    return absent
+  | reify @t == reify @r = \_ -> do  
+    x <- inc (reify @s) 
+    lift $ recv (reify @s) x
+  | otherwise = \_ -> return absent
+-- conditionals
+project1 _ (Split @l) (_ :: Proxy t)
+  | reify @t == reify @l = \ab -> do
+    ab' <- wait ab
+    case ab' of
+      (Left a)  -> Left <$> async (return a)
+      (Right b) -> Right <$> async (return b)
+  | otherwise = \_ -> return (Left absent)
+project1 _ (Notify @s @r) (_ :: Proxy t)
+  | reify @s == reify @r = \(ab, c) -> do
+    case ab of 
+      (Left a)  -> return (Left (a, c))
+      (Right b) -> return (Right (b, c))
+  | reify @t == reify @s = \(ab, _) -> do
+    x <- inc (reify @r)
+    case ab of 
+      (Left a)  -> do 
+        lift $ send (reify @r) (reify @s) x True
+        return (Left (a, absent))
+      (Right b) -> do 
+        lift $ send (reify @r) (reify @s) x False
+        return (Right (b, absent))
+  | reify @t == reify @r = \(_, c) -> do
+    x <- inc (reify @s)
+    ab' <- lift $ recv (reify @s) x
+    ab <- wait ab'
+    case ab of
+      True -> return (Left (absent, c))
+      False -> return (Right (absent, c))
+  | otherwise = \_ -> return (Left (absent, absent))
+project1 hdl (Branch f g) (t :: Proxy t) = \case 
+    (Left a)  -> Left <$> project1 hdl f t a 
+    (Right b) -> Right <$> project1 hdl g t b
+project1 _ Idem (_ :: Proxy t) = \case
+    (Left a) -> return a
+    (Right b) -> return b
 
-  fork = InterpT $ \case
-    (Self loc ab) -> do
-      a <- lift (async (fst <$> wait ab))
-      b <- lift (async (snd <$> wait ab))
-      return (Self loc a, Self loc b)
-    (Peer loc) -> return (Peer loc, Peer loc)
+project :: forall (l :: Type) f a b. (Typeable l) =>
+           (forall a b. f a b -> a -> IO b) -> CSD f a b -> Asynced a -> Http (Asynced b)
+project hdl c a = 
+  let c' = project1 hdl c (Proxy :: Proxy l)
+  in evalStateT (c' a) HM.empty
 
-  -- remember join is left biased
-  join = InterpT $ \case
-    (Self loc a, Self _ b) -> do
-      ab <- async ((,) <$> wait a <*> wait b)
-      return (Self loc ab)
-    (Self dst a, Peer src) -> do
-      id <- inc src
-      b <- lift (recv src id)
-      ab <- async ((,) <$> wait a <*> wait b)
-      return (Self dst ab)
-    (Peer dst, Self src b) -> do
-      id <- inc dst
-      lift (send' dst src id b) -- there's a dangling Async here
-      return (Peer dst)
-    (Peer a, Peer _) -> return (Peer a)
+-- * Tests
 
-project :: InterpT Located Http (StateT (HashMap Loc Id)) a b -> I Located a -> Http (I Located b)
-project f a = evalStateT (runInterpT f a) HM.empty
+foo :: (Typeable l) => CSD (Kleisli IO) (() @ l) (String @ l)
+foo =
+  perf (\_ -> getLine)
+
+foo2 :: (Typeable l) => CSD (Kleisli IO) (() @ l, () @ l) (String @ l, Int @ l)
+foo2 =
+  perf (\_ -> getLine) *** perf (\_ -> return 42)
+
+foo3 :: (Typeable l, Typeable l') => CSD (Kleisli IO) (() @ l, () @ l') (String @ l, (String, Int) @ l')
+foo3 =
+  perf (\_ -> getLine) *** perf (\_ -> return 42) >>>
+  (perf (\s -> return (s, s)) >>> Fork) *** Noop  >>>
+  AssocR                                          >>>
+  Noop *** To *** Noop                            >>>
+  Noop *** Join

@@ -20,9 +20,9 @@ import Servant.Server (Server, Handler, serve)
 ---------------------------------------------------------------------------------------------------
 -- * Network Programs
 
-type Loc = String
-type Src = Loc
-type Rmt = Loc
+type LocTm = String
+type Src = LocTm
+type Rmt = LocTm
 type Id = Int
 
 class (Monad m) => Network m where
@@ -38,7 +38,7 @@ class (Monad m) => Network m where
 
 type API =
   "send"
-    :> Capture "src" Loc
+    :> Capture "src" LocTm
     :> Capture "id" Id
     :> ReqBody '[PlainText] String
     :> PostNoContent
@@ -98,7 +98,7 @@ server debug buf = handler
 -- | The HTTP backend configuration specifies how locations are mapped to
 -- network hosts and ports.
 newtype HttpConfig = HttpConfig
-  { locToUrl :: HashMap Loc BaseUrl
+  { locToUrl :: HashMap LocTm BaseUrl
   }
 
 type Host = String
@@ -106,7 +106,7 @@ type Port = Int
 
 -- | Create a HTTP backend configuration from an association list that maps
 -- locations to network hosts and ports.
-mkHttpConfig :: [(Loc, (Host, Port))] -> HttpConfig
+mkHttpConfig :: [(LocTm, (Host, Port))] -> HttpConfig
 mkHttpConfig = HttpConfig . HM.fromList . fmap (fmap f)
   where
     f :: (Host, Port) -> BaseUrl
@@ -143,7 +143,7 @@ instance Network Http where
       a <- wait a
       when debug (liftIO $ logMsg ("Send " ++ show a ++ " to " ++ dst ++ " with id " ++ show id))
       res <- runClientM (sendServant src id (show a)) env
-      either (logMsg . show) (void . return) res -- TODO: consider doing retry
+      either print (void . return) res -- TODO: consider doing retry
 
   recv src id = do
     HttpCtx {debug, buf} <- ask
@@ -169,7 +169,7 @@ runHttpTop cfg self debug m = do
 
   -- wait for pending sends to finish   TODO: collect these sends and wait on them
   -- also give the server thread some time to send back response (this probabaly can't be fixed)
-  threadDelay 5_000_000
+  threadDelay 10000_000_000
   return a
 
   -- TODO: kill the server thread?
