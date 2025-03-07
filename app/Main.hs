@@ -19,37 +19,40 @@ priceOf _      = 999_999_999
 
 type Path = String
 
+data Code
 data Obj
+data Exe
 data LibRepo 
 data Server
 data ExeRepo
 
-getLibSrc :: CSD (Kleisli IO) (Path @ l) (String @ l)
-getLibSrc = undefined
+getSrc :: Path -> IO Code
+getSrc = undefined
 
-compile1 :: CSD (Kleisli IO) (String @ l) (Obj @ l)
-compile1 = undefined
+compile :: Code -> IO Obj
+compile = undefined
 
-compile2 :: CSD (Kleisli IO) ((String, String) @ l) (Obj @ l)
-compile2 = undefined
+link :: (Obj, Obj) -> IO Exe
+link = undefined
 
-compiler :: (Show Obj, Read Obj) => CSD (Kleisli IO) 
-  (Path @ LibRepo  *  () @ Server  *  Path @ ExeRepo)
-  (Obj  @ LibRepo  *  () @ Server  *  () @ Server  *  Obj  @ ExeRepo)
-compiler = 
-      getLibSrc || noop || getLibSrc
-  |>  noop || fork || noop
-  |>~ fork || noop || noop || fork
-  |>~ noop || Comm || noop || noop || Comm || noop
-  |>~ noop || joinL || joinR || noop
-  --
-  |>~ noop || fork || noop || noop
-  |>~ noop || noop || Join || noop
-  |>~ noop || compile1 || compile2 || noop
-  --
-  |>~ noop || forkL || forkR || noop
-  |>~ noop || Comm || noop || noop || Comm || noop
-  |>~ joinR || noop || noop || joinL
+distComp :: (Show Code, Read Code, Show Obj, Read Obj, Show Exe, Read Exe) => CSD (Kleisli IO)
+  (Path @ LibRepo * () @ Server * Path @ ExeRepo)
+  (Obj  @ LibRepo * () @ Server * () @ Server * Exe @ ExeRepo)
+distComp = 
+  -- repositories prepare and send source code
+  perf getSrc || (perf (\x -> pure (x, x)) |> Fork) || perf getSrc                             |>
+  (perf (\x -> pure ((), x)) |> Fork) || noop || noop || (perf (\x -> pure (x, ())) |> Fork)   |>
+  noop || Comm || noop || noop || Comm || noop                                                 |>
+  noop || (Join |> perf (\(x, _) -> pure x)) || (Join |> perf (\(_, x) -> pure x)) || noop     |>
+  -- server compiles source code
+  noop || perf compile || perf compile || noop                                                 |>
+  noop || (perf (\x -> pure (x, x)) |> Fork) || noop || noop                                   |>
+  noop || noop || Join || noop                                                                 |>
+  noop || noop || perf link || noop                                                            |> 
+  -- server sends back the results
+  noop || (perf (\x -> pure (x, ())) |> Fork) || (perf (\x -> pure ((), x)) |> Fork) || noop   |>
+  noop || Comm || noop || noop || Comm || noop                                                 |>
+  (Join |> perf (\(_, x) -> pure x)) || noop || noop || (Join |> perf (\(x, _) -> pure x))      
 
 -- seqExample :: (Typeable l) =>
 --               (a -> b) -> (b -> c) -> CSD (Kleisli IO) (a @ l) (c @ l) 
