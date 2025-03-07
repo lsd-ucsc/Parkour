@@ -22,10 +22,11 @@ import Control.Monad.State hiding (join)
 
 infix  3 @
 infixr 2 *
+infixr 1 +
 
 data (a :: Type) @ (l :: Type)
 data (a :: Type) * (b ::Type)
-data Choice ls a b 
+data (a :: Type) + (b :: Type)
 
 -- * Locations
 
@@ -58,11 +59,10 @@ data CSD f a b where
   Join :: (Typeable l) => CSD f (x @ l * y @ l) ((x, y) @ l)
   Perm :: a ≃ b -> CSD f a b
 
-  -- Conditionals
-  Split  :: (Typeable l) => CSD f (Either a b @ l) (Choice '[l] (a @ l) (b @ l))
-  Notify :: (Typeable l, Typeable l', In l ls) => CSD f (Choice ls a b * c @ l') (Choice (l':ls) (a * c @ l') (b * c @ l'))
-  Branch :: CSD f a c -> CSD f b d -> CSD f (Choice ls a b) (Choice ls c d)
-  Idem   :: CSD f (Choice ls a a) a
+  -- Conditionals  
+  Split  :: (Typeable l) => CSD f (Either a b @ l) (a @ l + b @ l)
+  Branch :: CSD f a c -> CSD f b d -> CSD f (a + b) (c + d)
+  Idem   :: CSD f (a + a) a
 
 -- Derived operations and syntax sugar
 
@@ -73,27 +73,27 @@ perf m = Perf (Kleisli m)
 noop :: CSD f (a @ l) (a @ l)
 noop = Perm Noop
 
+infixr 1 ||>
 infixr 1 |>
-infixr 1 |>~
 infixr 3 ||
 
-(|>) :: CSD f a b -> CSD f b c -> CSD f a c
-f |> g = Seq f g
-
-(|>~) :: (Normalizable b, Normalizable b', Norm b ~ Norm b') => 
-         CSD f a b -> CSD f b' c -> CSD f a c
-f |>~ g = f |> toNorm |> fromNorm |> g        
+(||>) :: CSD f a b -> CSD f b c -> CSD f a c
+f ||> g = Seq f g
 
 (||) :: CSD f a c -> CSD f b d -> CSD f (a * b) (c * d)
 f || g = Par f g
+
+(|>) :: (Normalizable b, Normalizable b', Norm b ~ Norm b') => 
+         CSD f a b -> CSD f b' c -> CSD f a c
+f |> g = f ||> toNorm ||> fromNorm ||> g        
 
 -- right-associative normal forms for configurations
 type family Norm a where
   Norm (x @ l) = x @ l
   Norm (x @ l * c) = x @ l * Norm c
   Norm ((a * b) * c) = Norm a * Norm (b * c)
-  Norm (Choice ls a b) = Choice ls a b
-  Norm (Choice ls a b * c) = Choice ls a b * Norm c   
+  Norm (a + b) = a + b
+  Norm ((a + b) * c) = (a + b) * Norm c   
 
 class Normalizable a where
   fromNorm :: CSD f (Norm a) a
@@ -108,49 +108,16 @@ instance (Normalizable c) => Normalizable (x @ l * c) where
   toNorm = Par (Perm Noop) toNorm
 
 instance (Normalizable a, Normalizable (b * c)) => Normalizable ((a * b) * c) where
-  fromNorm = Par fromNorm fromNorm |> Perm AssocL
-  toNorm = Perm AssocR |> Par toNorm toNorm
+  fromNorm = Par fromNorm fromNorm ||> Perm AssocL
+  toNorm = Perm AssocR ||> Par toNorm toNorm
 
-instance Normalizable (Choice ls a b) where
+instance Normalizable (a + b) where
   fromNorm = Perm Noop
   toNorm = Perm Noop
 
-instance (Normalizable c) => Normalizable (Choice ls a b * c) where
+instance (Normalizable c) => Normalizable ((a + b) * c) where
   fromNorm = Par (Perm Noop) fromNorm
   toNorm = Par (Perm Noop) toNorm
-
--- automatically copy the state
-fork :: (Arrow f, Typeable l) => CSD f (a @ l) (a @ l * a @ l)
-fork = Perf (arr (\x -> (x, x))) |> Fork
-
-forkL :: (Arrow f, Typeable l) => CSD f (a @ l) (a @ l * () @ l)
-forkL = Perf (arr (,())) |> Fork
-
-forkR :: (Arrow f, Typeable l) => CSD f (a @ l) (() @ l * a @ l)
-forkR = Perf (arr ((),)) |> Fork
-
--- automatically drop unit
-joinL :: (Arrow f, Typeable l) => CSD f (a @ l * b @ l) (a @ l)
-joinL = Join |> Perf (arr fst)
-
-joinR :: (Arrow f, Typeable l) => CSD f (a @ l * b @ l) (b @ l)
-joinR = Join |> Perf (arr snd)
-
-class SmartJoin a where
-  type T a
-  join :: (Arrow f) => CSD f a (T a)
-
-instance (Typeable l) => SmartJoin (a @ l * () @ l) where
-  type T (a @ l * () @ l) = a @ l
-  join = Join |> Perf (arr fst)
-
-instance (Typeable l) => SmartJoin (() @ l * a @ l) where
-  type T (() @ l * a @ l) = a @ l
-  join = Join |> Perf (arr snd)
-
--- instance {-# OVERLAPPING #-} (Typeable l) => SmartJoin (a @ l * b @ l) where
---   type T (a @ l * b @ l) = (a, b) @ l
---   join = Join
 
 ---------------------------------------------------------------------------------------------------
 -- * Interpreations
@@ -158,7 +125,7 @@ instance (Typeable l) => SmartJoin (() @ l * a @ l) where
 type family Asynced a where
   Asynced (a @ l) = Async a
   Asynced (a * b) = (Asynced a, Asynced b)
-  Asynced (Choice ls a b) = Either (Asynced a) (Asynced b)
+  Asynced (a + b) = Either (Asynced a) (Asynced b)
 
 type CentralF a b = Asynced a -> IO (Asynced b)
 
@@ -181,10 +148,6 @@ runCSD _ Split = \ab -> do
   case ab' of
     (Left a)  -> Left <$> async (return a)
     (Right b) -> Right <$> async (return b)
-runCSD _ Notify = \(ab, c) -> do
-  case ab of 
-    (Left a)  -> return (Left (a, c))
-    (Right b) -> return (Right (b, c))
 runCSD hdl (Branch f g) = \case 
   (Left a)  -> Left <$> runCSD hdl f a
   (Right b) -> Right <$> runCSD hdl g b
@@ -241,28 +204,6 @@ project1 _ (Split @l) (_ :: Proxy t)
       (Left a)  -> Left <$> async (return a)
       (Right b) -> Right <$> async (return b)
   | otherwise = \_ -> return (Left absent)
-project1 _ (Notify @s @r) (_ :: Proxy t)
-  | reify @s == reify @r = \(ab, c) -> do
-    case ab of 
-      (Left a)  -> return (Left (a, c))
-      (Right b) -> return (Right (b, c))
-  | reify @t == reify @s = \(ab, _) -> do
-    x <- inc (reify @r)
-    case ab of 
-      (Left a)  -> do 
-        lift $ send (reify @r) (reify @s) x True
-        return (Left (a, absent))
-      (Right b) -> do 
-        lift $ send (reify @r) (reify @s) x False
-        return (Right (b, absent))
-  | reify @t == reify @r = \(_, c) -> do
-    x <- inc (reify @s)
-    ab' <- lift $ recv (reify @s) x
-    ab <- wait ab'
-    case ab of
-      True -> return (Left (absent, c))
-      False -> return (Right (absent, c))
-  | otherwise = \_ -> return (Left (absent, absent))
 project1 hdl (Branch f g) (t :: Proxy t) = \case 
     (Left a)  -> Left <$> project1 hdl f t a 
     (Right b) -> Right <$> project1 hdl g t b
@@ -281,8 +222,10 @@ project hdl c a =
 foo :: (Typeable l, Typeable l') => 
        CSD (Kleisli IO) (() @ l * () @ l') (String @ l * (String, Int) @ l')
 foo =
-     perf (\_ -> getLine) || perf (\_ -> return 42) 
-  |> (perf (\s -> return (s, s)) |> Fork) || noop
---  |> Perm AssocR
-  |>~ noop || Comm || noop                          
+     perf (\_ -> getLine) || perf (\_ -> return 42)
+  ||> (perf (\s -> return (s, s)) |> Fork) || noop
+  -- ||> (noop || Comm) || noop
+  -- ||> Perm AssocR                          
+  -- ||> noop || Join
+  |> noop || Comm || noop
   |> noop || Join
