@@ -21,14 +21,12 @@ import Servant.Server (Server, Handler, serve)
 -- * Network Programs
 
 type LocTm = String
-type Src = LocTm
-type Rmt = LocTm
 type Id = Int
 
 class (Monad m) => Network m where
-  send :: (Show a) => Rmt -> Src -> Id -> a -> m (Async ())
-  send' :: (Show a) => Rmt -> Src -> Id -> Async a -> m (Async ())
-  recv :: (Read a) => Src -> Id -> m (Async a)
+  send :: (Show a) => LocTm -> Id -> Async a -> m (Async ())
+  recv :: (Read a) => Id -> m (Async a)
+  bcast :: (Show a) => Id -> a -> m [Async ()]
 
 ---------------------------------------------------------------------------------------------------
 -- * HTTP (Servant) Backend
@@ -38,7 +36,6 @@ class (Monad m) => Network m where
 
 type API =
   "send"
-    :> Capture "src" LocTm
     :> Capture "id" Id
     :> ReqBody '[PlainText] String
     :> PostNoContent
@@ -49,47 +46,47 @@ api = Proxy
 -----------------------------------------------------------
 -- Client action
 
-sendServant :: Src -> Id -> String -> ClientM NoContent
+sendServant :: Id -> String -> ClientM NoContent
 sendServant = client api
 
 -----------------------------------------------------------
 -- Server action
 
-type MsgBuf = MVar (HashMap (Src, Id) (MVar String))
+type MsgBuf = MVar (HashMap Id (MVar String))
 
 emptyMsgBuf :: IO MsgBuf
 emptyMsgBuf = newMVar HM.empty
 
-lookupMsgBuf :: Src -> Id -> MsgBuf -> IO (MVar String)
-lookupMsgBuf src id buf = do
+lookupMsgBuf :: Id -> MsgBuf -> IO (MVar String)
+lookupMsgBuf id buf = do
   map <- takeMVar buf
-  case HM.lookup (src, id) map of
+  case HM.lookup id map of
     Just mvar -> do
       putMVar buf map
       return mvar
     Nothing -> do
       mvar <- newEmptyMVar
-      putMVar buf (HM.insert (src, id) mvar map)
+      putMVar buf (HM.insert id mvar map)
       return mvar
 
-putMsg :: (Show a) => a -> Src -> Id -> MsgBuf -> IO ()
-putMsg msg src id buf = do
-  mvar <- lookupMsgBuf src id buf
+putMsg :: (Show a) => a -> Id -> MsgBuf -> IO ()
+putMsg msg id buf = do
+  mvar <- lookupMsgBuf id buf
   putMVar mvar (show msg)
 
 -- bLocking semantics
-getMsg :: (Read a) => Src -> Id -> MsgBuf -> IO a
-getMsg src id buf = do
-  mvar <- lookupMsgBuf src id buf
+getMsg :: (Read a) => Id -> MsgBuf -> IO a
+getMsg id buf = do
+  mvar <- lookupMsgBuf id buf
   read <$> takeMVar mvar
 
 server :: Bool -> MsgBuf -> Server API
 server debug buf = handler
   where
-    handler :: Src -> Id -> String -> Handler NoContent
-    handler src id msg = do
-      when debug (liftIO $ logMsg ("Received " ++ msg ++ " from " ++ src ++ " with sequence number " ++ show id))
-      liftIO $ putMsg msg src id buf
+    handler :: Id -> String -> Handler NoContent
+    handler id msg = do
+      when debug (liftIO $ logMsg ("Received " ++ msg ++ " with sequence number " ++ show id))
+      liftIO $ putMsg msg id buf
       return NoContent
 
 -----------------------------------------------------------
@@ -100,6 +97,9 @@ server debug buf = handler
 newtype HttpConfig = HttpConfig
   { locToUrl :: HashMap LocTm BaseUrl
   }
+
+locs :: HttpConfig -> [LocTm]
+locs = HM.keys . locToUrl
 
 type Host = String
 type Port = Int
@@ -132,24 +132,25 @@ newtype Http a = Http { unHttp :: ReaderT HttpCtx IO a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadReader HttpCtx)
 
 instance Network Http where
-  send dst src id a = do
-    a <- async (return a)
-    send' dst src id a
-
-  send' dst src id a = do
+  send dst id a = do
     HttpCtx { debug, cfg, mgr } <- ask
     let env = mkClientEnv mgr (locToUrl cfg ! dst)
     async $ do
       a <- wait a
       when debug (liftIO $ logMsg ("Send " ++ show a ++ " to " ++ dst ++ " with id " ++ show id))
-      res <- runClientM (sendServant src id (show a)) env
+      res <- runClientM (sendServant id (show a)) env
       either print (void . return) res -- TODO: consider doing retry
 
-  recv src id = do
+  recv id = do
     HttpCtx {debug, buf} <- ask
-    when debug (liftIO $ logMsg ("Wait for a message from " ++ src ++ " with id " ++ show id))
+    when debug (liftIO $ logMsg ("Wait for a message with id " ++ show id))
     async $ do
-      read <$> getMsg src id buf
+      read <$> getMsg id buf
+
+  bcast id a = do
+    HttpCtx { cfg } <- ask
+    a' <- async (return a)
+    mapM (\x -> send x id a') (locs cfg)
 
 -- the top-most function
 -- the second argument specifies the port to listen for incoming messages

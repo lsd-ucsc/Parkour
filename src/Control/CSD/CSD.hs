@@ -13,7 +13,6 @@ import Data.Typeable
 import Control.Concurrent.Async.Lifted
 import Control.Arrow
 import Control.CSD.Network
-    ( Http, LocTm, Network(recv, send', send) )
 import Control.Monad.State hiding (join)
 
 ---------------------------------------------------------------------------------------------------
@@ -189,11 +188,11 @@ project1 _ (Comm @s @r) (_ :: Proxy t)
   | reify @s == reify @r = return
   | reify @t == reify @s = \x -> do
     i <- inc
-    lift $ send' (reify @r) (reify @s) i x -- there's dangling Async there
+    lift $ send (reify @r) i x -- there's dangling Async there
     return absent
   | reify @t == reify @r = \_ -> do
     i <- inc
-    lift $ recv (reify @s) i
+    lift $ recv i
   | otherwise = \_ -> inc >> return absent
 project1 hdl (Seq f g) t = \a -> project1 hdl f t a >>= project1 hdl g t
 project1 hdl (Par f g) t = \(a, b) -> (,) <$> project1 hdl f t a <*> project1 hdl g t b
@@ -211,18 +210,18 @@ project1 _ (Split @s) (_ :: Proxy t)
     i <- inc
     case xy' of
       (Left a) -> do
-        bcast i (Left ())
+        lift $ bcast i False
         Left <$> async (return a)
       (Right b) -> do
-        bcast i (Right ())
+        lift $ bcast i True
         Right <$> async (return b)
   | otherwise = \_ -> do
     i <- inc
-    c <- recv (reify @s) i
+    c <- lift $ recv i
     c' <- wait c
-    case c' of
-      (Left ()) -> return (Left absent)
-      (Right ()) -> return (Right absent)
+    if c'
+    then return (Left absent)
+    else return (Right absent)
 project1 _ (Coalesce @l) (_ :: Proxy t)
   | reify @t == reify @l = \case
     (Left a) -> return (Left <$> a)
