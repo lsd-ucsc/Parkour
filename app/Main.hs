@@ -12,33 +12,38 @@ import Data.Proxy
 import Data.Typeable
 import System.Environment
 
+-------------------------------------------------------------------------------
+-- Example 1: Distributed Compilation Service
+
 priceOf :: String -> Int
 priceOf "TaPL" = 80
 priceOf "PFPL" = 100
 priceOf _      = 999_999_999
 
 type Path = String
+type Code = String
+type Obj = String
+type Exe = String
 
-data Code
-data Obj
-data Exe
-data LibRepo 
+data LibRepo
 data Server
 data ExeRepo
 
 getSrc :: Path -> IO Code
-getSrc = undefined
+getSrc _ = getLine
 
 compile :: Code -> IO Obj
-compile = undefined
+compile c = do
+  x <- getLine
+  return (c ++ x)
 
 link :: (Obj, Obj) -> IO Exe
-link = undefined
+link (o1, o2) = return (o1 ++ o2)
 
 distComp :: (Show Code, Read Code, Show Obj, Read Obj, Show Exe, Read Exe) => CSD (Kleisli IO)
   (Path @ LibRepo * () @ Server * Path @ ExeRepo)
   (Obj  @ LibRepo * () @ Server * () @ Server * Exe @ ExeRepo)
-distComp = 
+distComp =
   -- repositories prepare and send source code
   perf getSrc || (perf (\x -> pure (x, x)) |> Fork) || perf getSrc                             |>
   (perf (\x -> pure ((), x)) |> Fork) || noop || noop || (perf (\x -> pure (x, ())) |> Fork)   |>
@@ -48,127 +53,57 @@ distComp =
   noop || perf compile || perf compile || noop                                                 |>
   noop || (perf (\x -> pure (x, x)) |> Fork) || noop || noop                                   |>
   noop || noop || Join || noop                                                                 |>
-  noop || noop || perf link || noop                                                            |> 
+  noop || noop || perf link || noop                                                            |>
   -- server sends back the results
   noop || (perf (\x -> pure (x, ())) |> Fork) || (perf (\x -> pure ((), x)) |> Fork) || noop   |>
   noop || Comm || noop || noop || Comm || noop                                                 |>
-  (Join |> perf (\(_, x) -> pure x)) || noop || noop || (Join |> perf (\(x, _) -> pure x))      
+  (Join |> perf (\(_, x) -> pure x)) || noop || noop || (Join |> perf (\(x, _) -> pure x))
 
--- seqExample :: (Typeable l) =>
---               (a -> b) -> (b -> c) -> CSD (Kleisli IO) (a @ l) (c @ l) 
--- seqExample f g = _
+-------------------------------------------------------------------------------
+-- Example 2: Bookstore
 
--- commExample :: (Typeable la, Typeable lb, Monad m, Show a, Read a) => 
---                CSD (Kleisli m) (a @ la,  b @ lb) (a @ la, (a, b) @ lb)
--- commExample
---   =   perf (\a -> return (a, a)) *** Noop
---   >>> Fork *** Noop
---   >>> AssocR 
---   >>> Noop *** (To *** Noop)
---   >>> Noop *** Join
+data Buyer
+data Buyer2
+data Seller
+data Seller2
 
--- parExample :: (Typeable la, Typeable lb, Typeable lc, Monad m, Show a, Read a, Show c, Read c) => 
---               CSD (Kleisli m) (a @ la, (c @ lc, b @ lb)) ((a @ la, (a ,b) @ lb), (c @ lc, (c, b) @ lb))
--- parExample 
---   =   Noop *** Noop *** (perf (\b -> return (b, b)) >>> Fork)
---   >>> (congL AssocL >>> congL Swap >>> AssocL)
---   >>> commExample *** commExample
+loopN :: Int -> CSD f a a -> CSD f a a
+loopN n f
+  | n == 0 = Perm Id
+  | n > 0 = f |> loopN (n - 1) f
+  | n < 0 = f |> loopN (n + 1) f
 
--- data Buyer
--- data Buyer2
--- data Seller
--- data Seller2
+priceOf' :: String -> Either String Int
+priceOf' "HoTT" = Right 123
+priceOf' "MLTT" = Right 456
+priceOf' s      = Left s
 
--- -- Example 1: Basic Bookstore
--- --
--- -- A buyer sends the title of the book to the seller, then gets back its price.
--- --
--- --                > String        > ()
--- --                   |\            |
--- --                   | ¯¯¯¯¯¯¯¯¯¯| |
--- --                   |            \|
--- --                   |          priceOf
--- --                   |            /|
--- --                   | |¯¯¯¯¯¯¯¯¯¯ |
--- --                   |/            |
--- --                 < Int          < ()
+-- Example 3: Conditional Choreography (with granular knowledge of choice)
+--
+-- Two sellers:
+--    Seller1 uses `priceOf'`, which is partial
+--    Seller1 forwards the title to seller 2 if it can't lookup its price.
+--
+--                > String        > ()         > ()
+--                   |\            |            |
+--                   | ¯¯¯¯¯¯¯¯¯¯| |            |
+--                   |            \|            |
+--                   |          priceOf'        |
+--                   |             |           /
+--                   |            / \         /
+--                   |           / _ \_______/
+--                   |          /  |  \     |
+--                   |         /   |   \    |
+--                   |       bookstore1 |   |
+--                   |         |   |    |   |
+--                   |          \__|____|___/
+--                   |              |     |
+--                   |             /|     |
+--                   | |¯¯¯¯¯¯¯¯¯¯¯ |     |
+--                   |/             |     |
+--                  < Int         < ()   < ()
 
--- bookstore1 :: forall buyer seller. (Typeable buyer, Typeable seller) =>
---               CSD (Kleisli IO) (() @ buyer, () @ seller) (() @ buyer, () @ seller)
--- bookstore1 =
---   perf (\_ -> getLine)        *** Noop >>> -- (String @ buyer, () @ seller)
---   perf (\t -> return ((), t)) *** Noop >>> -- (((), String) @ buyer, () @ seller)
---   Fork                        *** Noop >>> -- ((() @ buyer, String @ buyer), () @ seller)
---   AssocR                               >>> -- (() @ buyer, (String @ buyer, () @ seller))
---   Noop *** (To @_ @seller *** Noop)    >>> -- (() @ buyer, (String @ seller, () @ seller))
---   Noop *** Join                        >>> -- (() @ buyer, (String, ()) @ seller)
---   Noop *** perf (\(t, _) -> return (priceOf t, ())) >>> -- (() @ buyer, (Int, ()) @ seller)
---   Noop *** Fork                                     >>> -- (() @ buyer, (Int @ seller, () @ seller))
---   AssocL                                            >>> -- ((() @ buyer, Int @ seller), () @ seller)
---   (Noop *** To) *** Noop                            >>> -- ((() @ buyer, Int @ buyer), () @ seller)
---   Join *** Noop                                     >>> -- (((), Int) @ buyer), () @ seller)
---   perf (\(_, p) -> print p) *** Noop                    -- (() @ buyer, () @ seller)
-
--- bookstore1' :: forall buyer seller. (Typeable buyer, Typeable seller) => 
---                CSD (Kleisli IO) (String @ buyer, () @ seller) (Int @ buyer, () @ seller)
--- bookstore1' =
---   (perf (\t -> return ((), t)) >>> Fork) *** Noop                                         >>> 
---   AssocR                                                                                  >>> 
---   Noop *** ((To *** Noop) >>> Join >>> perf (\(t, _) -> return (priceOf t, ())) >>> Fork) >>> 
---   AssocL                                                                                  >>> 
---   ((Noop *** To) >>> Join >>> perf (\(_, p) -> return p)) *** Noop
-
--- -- Example 2: Parallel Bookstore
--- --
--- -- Two buyers interact with a seller in parallel.
--- --
--- -- It might seem that we have seller, but they should be considered as *logical* sellers.
--- -- When acutally running this choreography, we expect the *physical* seller would take the
--- -- role of both logical seller and run them in parallel.
-
--- loopN :: Int -> CSD f a a -> CSD f a a
--- loopN n f
---   | n == 0 = Noop
---   | n > 0 = f >>> loopN (n - 1) f
---   | n < 0 = f >>> loopN (n + 1) f
-
--- bookstore2 :: CSD (Kleisli IO) (() @ Buyer, (() @ Buyer2, () @ Seller)) ((() @ Buyer, () @ Seller), (() @ Buyer2, () @ Seller))
--- bookstore2 =
---       Noop *** Noop *** (perf (\_ -> return ((), ())) >>> Fork)
---   >>> (CongL AssocL >>> CongL Swap >>> AssocL)
---   >>> loopN 3 (bookstore1 *** bookstore1)
-
--- priceOf' :: String -> Either String Int
--- priceOf' "HoTT" = Right 123
--- priceOf' "MLTT" = Right 456
--- priceOf' s      = Left s
-
--- -- Example 3: Conditional Choreography (with granular knowledge of choice)
--- --
--- -- Two sellers:
--- --    Seller1 uses `priceOf'`, which is partial
--- --    Seller1 forwards the title to seller 2 if it can't lookup its price.
--- --
--- --                > String        > ()         > ()
--- --                   |\            |            |
--- --                   | ¯¯¯¯¯¯¯¯¯¯| |            |
--- --                   |            \|            |
--- --                   |          priceOf'        |
--- --                   |             |           /
--- --                   |            / \         /
--- --                   |           / _ \_______/
--- --                   |          /  |  \     |
--- --                   |         /   |   \    |
--- --                   |       bookstore1 |   |
--- --                   |         |   |    |   |
--- --                   |          \__|____|___/
--- --                   |              |     |
--- --                   |             /|     |
--- --                   | |¯¯¯¯¯¯¯¯¯¯¯ |     |
--- --                   |/             |     |
--- --                  < Int         < ()   < ()
-
--- bookstore3 :: CSD (Kleisli IO) (() @ Buyer, (() @ Seller, () @ Seller2)) (() @ Buyer, (() @ Seller, () @ Seller2))
+-- bookstore3 :: CSD (Kleisli IO) (() @ Buyer * () @ Seller * () @ Seller2) (() @ Buyer * () @ Seller * () @ Seller2)
 -- bookstore3 =
 --       (perf (\_ -> putStrLn ">>> Type in the title of the book:" >> ((),) <$> getLine) >>> Fork) *** Noop *** Noop
 --   >>> (AssocR >>> CongL AssocL)
@@ -244,6 +179,31 @@ main = do
   --     let prog = project @Seller2 runKleisli bookstore3 (absent, (absent, s3))
   --     (_, (_, s3')) <- runHttp config 40004 prog
   --     mapM_ wait [s3']
+    ["distComp"] -> do
+      s1 <- async (return "path1")
+      s2 <- async (return ())
+      s3 <- async (return "path2")
+      (s1, (_, (_, s3)))<- runCSD runKleisli distComp (s1, (s2, s3))
+      s1 <- async (wait s1 >>= print)
+      s3 <- async (wait s3 >>= print)
+      mapM_ wait [s1, s3]
+    ["distComp", "LibRepo"] -> do
+      s1 <- async (return "path1")
+      let prog = project @LibRepo runKleisli distComp (s1, (absent, absent))
+      (s1, (_, (_, _))) <- runHttpDebug config2 40001 prog
+      s1 <- async (wait s1 >>= print)
+      mapM_ wait [s1]
+    ["distComp", "Server"] -> do
+      s2 <- async (return ())
+      let prog = project @Server runKleisli distComp (absent, (s2, absent))
+      (_, (s2, (s2', _))) <- runHttpDebug config2 40002 prog
+      mapM_ wait [s2, s2']
+    ["distComp", "ExeRepo"] -> do
+        s3 <- async (return "path2")
+        let prog = project @ExeRepo runKleisli distComp (absent, (absent, s3))
+        (_, (_, (_, s3))) <- runHttpDebug config2 40003 prog
+        s3 <- async (wait s3 >>= print)
+        mapM_ wait [s3]
     _ -> putStrLn "Unknown command-line arguments"
   where
     config :: HttpConfig
@@ -252,4 +212,11 @@ main = do
         ("Seller", ("localhost", 40002)),
         ("Buyer2", ("localhost", 40003)),
         ("Seller2", ("localhost", 40004))
+      ]
+
+    config2 :: HttpConfig
+    config2 = mkHttpConfig
+      [ ("LibRepo", ("localhost", 40001)),
+        ("Server",  ("localhost", 40002)),
+        ("ExeRepo", ("localhost", 40003))
       ]

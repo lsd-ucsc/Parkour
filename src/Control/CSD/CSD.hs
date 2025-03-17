@@ -50,7 +50,7 @@ data a ≃ b where
 
 data CSD f a b where
   Perf :: (Typeable l) => f x y -> CSD f (x @ l) (y @ l)
-  Comm :: (Typeable l', Typeable l, Show x, Read x) => CSD f (x @ l) (x @ l')
+  Comm :: (Typeable l, Typeable l', Show x, Read x) => CSD f (x @ l) (x @ l')
   Seq  :: CSD f a b -> CSD f b c -> CSD f a c
   Par  :: CSD f a c -> CSD f b d -> CSD f (a * b) (c * d)
   Fork :: (Typeable l) => CSD f ((x, y) @ l) (x @ l * y @ l)
