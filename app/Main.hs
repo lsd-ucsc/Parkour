@@ -3,8 +3,8 @@
 
 module Main where
 
-import Prelude hiding ((||))
-import Control.Arrow
+import Prelude hiding ((***))
+import Control.Arrow (Kleisli (..))
 import Control.Concurrent.Async.Lifted
 import Control.CSD.Network
 import Control.CSD.CSD
@@ -45,19 +45,19 @@ distComp :: (Show Code, Read Code, Show Obj, Read Obj, Show Exe, Read Exe) => CS
   (Obj  @ LibRepo * () @ Server * () @ Server * Exe @ ExeRepo)
 distComp =
   -- repositories prepare and send source code
-  perf getSrc || (perf (\x -> pure (x, x)) |> Fork) || perf getSrc                             |>
-  (perf (\x -> pure ((), x)) |> Fork) || noop || noop || (perf (\x -> pure (x, ())) |> Fork)   |>
-  noop || Comm || noop || noop || Comm || noop                                                 |>
-  noop || (Join |> perf (\(x, _) -> pure x)) || (Join |> perf (\(_, x) -> pure x)) || noop     |>
+  perf getSrc *** (perf (\x -> pure (x, x)) >>> Fork) *** perf getSrc                             >>>~
+  (perf (\x -> pure ((), x)) >>> Fork) *** noop *** noop *** (perf (\x -> pure (x, ())) >>> Fork) >>>~
+  noop *** Comm *** noop *** noop *** Comm *** noop                                               >>>~
+  noop *** (Join >>> perf (\(x, _) -> pure x)) *** (Join >>> perf (\(_, x) -> pure x)) *** noop   >>>~
   -- server compiles source code
-  noop || perf compile || perf compile || noop                                                 |>
-  noop || (perf (\x -> pure (x, x)) |> Fork) || noop || noop                                   |>
-  noop || noop || Join || noop                                                                 |>
-  noop || noop || perf link || noop                                                            |>
+  noop *** perf compile *** perf compile *** noop                                                 >>>~
+  noop *** (perf (\x -> pure (x, x)) >>> Fork) *** noop *** noop                                  >>>~
+  noop *** noop *** Join *** noop                                                                 >>>~
+  noop *** noop *** perf link *** noop                                                            >>>~
   -- server sends back the results
-  noop || (perf (\x -> pure (x, ())) |> Fork) || (perf (\x -> pure ((), x)) |> Fork) || noop   |>
-  noop || Comm || noop || noop || Comm || noop                                                 |>
-  (Join |> perf (\(_, x) -> pure x)) || noop || noop || (Join |> perf (\(x, _) -> pure x))
+  noop *** (perf (\x -> pure (x, ())) >>> Fork) *** (perf (\x -> pure ((), x)) >>> Fork) *** noop >>>~
+  noop *** Comm *** noop *** noop *** Comm *** noop                                               >>>~
+  (Join >>> perf (\(_, x) -> pure x)) *** noop *** noop *** (Join >>> perf (\(x, _) -> pure x))
 
 -------------------------------------------------------------------------------
 -- Example 2: Bookstore
@@ -70,8 +70,8 @@ data Seller2
 loopN :: Int -> CSD f a a -> CSD f a a
 loopN n f
   | n == 0 = Perm Id
-  | n > 0 = f |> loopN (n - 1) f
-  | n < 0 = f |> loopN (n + 1) f
+  | n > 0 = f >>> loopN (n - 1) f
+  | n < 0 = f >>> loopN (n + 1) f
 
 priceOf' :: String -> Either String Int
 priceOf' "HoTT" = Right 123

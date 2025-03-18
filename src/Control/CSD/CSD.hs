@@ -11,7 +11,7 @@ import Data.Kind
 import Data.Proxy
 import Data.Typeable
 import Control.Concurrent.Async.Lifted
-import Control.Arrow
+import Control.Arrow (Kleisli(..))
 import Control.CSD.Network
 import Control.Monad.State hiding (join)
 
@@ -38,15 +38,13 @@ eqLoc = reify @l == reify @l'
 ---------------------------------------------------------------------------------------------------
 -- * CSDs
 
-infix 1 ≃
-
-data a ≃ b where
-  Id        :: a ≃ a
-  Swap      :: a * b ≃ b * a
-  AssocL    :: a * (b * c) ≃ (a * b) * c
-  AssocR    :: (a * b) * c ≃ a * (b * c)
-  Distrib   :: ((a + b) * c) ≃ (a * c + b * c)
-  Undistrib :: (a * c + b * c) ≃ ((a + b) * c)
+data Perm a b where
+  Id        :: Perm a a
+  Swap      :: Perm (a * b) (b * a)
+  AssocL    :: Perm (a * (b * c)) ((a * b) * c)
+  AssocR    :: Perm ((a * b) * c) (a * (b * c))
+  Distrib   :: Perm ((a + b) * c) (a * c + b * c)
+  Undistrib :: Perm (a * c + b * c) ((a + b) * c)
 
 data CSD f a b where
   Perf :: (Typeable l) => f x y -> CSD f (x @ l) (y @ l)
@@ -55,7 +53,7 @@ data CSD f a b where
   Par  :: CSD f a c -> CSD f b d -> CSD f (a * b) (c * d)
   Fork :: (Typeable l) => CSD f ((x, y) @ l) (x @ l * y @ l)
   Join :: (Typeable l) => CSD f (x @ l * y @ l) ((x, y) @ l)
-  Perm :: a ≃ b -> CSD f a b
+  Perm :: Perm a b -> CSD f a b
   -- Conditionals
   Split    :: (Typeable l) => CSD f (Either x y @ l) (x @ l + y @ l)
   Coalesce :: (Typeable l) => CSD f (x @ l + y @ l) (Either x y @ l)
@@ -71,19 +69,23 @@ perf m = Perf (Kleisli m)
 noop :: CSD f (a @ l) (a @ l)
 noop = Perm Id
 
-infixr 1 ||>
-infixr 1 |>
-infixr 3 ||
+infixr 1 >>>
+infixr 1 >>>~
+infixr 3 ***
+infixr 3 |||
 
-(||>) :: CSD f a b -> CSD f b c -> CSD f a c
-f ||> g = Seq f g
+(>>>) :: CSD f a b -> CSD f b c -> CSD f a c
+f >>> g = Seq f g
 
-(||) :: CSD f a c -> CSD f b d -> CSD f (a * b) (c * d)
-f || g = Par f g
+(***) :: CSD f a c -> CSD f b d -> CSD f (a * b) (c * d)
+f *** g = Par f g
 
-(|>) :: (Normalizable b, Normalizable b', Norm b ~ Norm b') =>
+(>>>~) :: (Normalizable b, Normalizable b', Norm b ~ Norm b') =>
         CSD f a b -> CSD f b' c -> CSD f a c
-f |> g = f ||> toNorm ||> fromNorm ||> g
+f >>>~ g = f >>> toNorm >>> fromNorm >>> g
+
+(|||) :: CSD f a c -> CSD f b d -> CSD f (a + b) (c + d)
+f ||| g = Branch f g
 
 -- right-associative normal forms for configurations
 type family Norm a where
@@ -106,8 +108,8 @@ instance (Normalizable c) => Normalizable (x @ l * c) where
   toNorm = Par (Perm Id) toNorm
 
 instance (Normalizable a, Normalizable (b * c)) => Normalizable ((a * b) * c) where
-  fromNorm = Par fromNorm fromNorm ||> Perm AssocL
-  toNorm = Perm AssocR ||> Par toNorm toNorm
+  fromNorm = Par fromNorm fromNorm >>> Perm AssocL
+  toNorm = Perm AssocR >>> Par toNorm toNorm
 
 instance Normalizable (a + b) where
   fromNorm = Perm Id
@@ -129,7 +131,7 @@ type CentralF a b = Asynced a -> IO (Asynced b)
 
 -- ** Centralized Semantics
 
-runCSDPerm :: a ≃ b -> CentralF a b
+runCSDPerm :: Perm a b -> CentralF a b
 runCSDPerm Id = \a -> return a
 runCSDPerm Swap = \(a, b) -> return (b, a)
 runCSDPerm AssocL = \(a, (b, c)) -> return ((a, b), c)
@@ -172,7 +174,7 @@ inc = do
   put (v + 1)
   return v
 
-project1Perm :: a ≃ b -> ProjectedF a b
+project1Perm :: Perm a b  -> ProjectedF a b
 project1Perm Id _ = \a -> return a
 project1Perm Swap _ = \(a, b) -> return (b, a)
 project1Perm AssocL _ = \(a, (b, c)) -> return ((a, b), c)
@@ -243,10 +245,10 @@ project hdl c a =
 foo :: (Typeable l, Typeable l') =>
        CSD (Kleisli IO) (() @ l * () @ l') (String @ l * (String, Int) @ l')
 foo =
-     perf (\_ -> getLine) || perf (\_ -> return 42)
-  ||> (perf (\s -> return (s, s)) |> Fork) || noop
-  -- ||> (noop || Comm) || noop
-  -- ||> Perm AssocR
-  -- ||> noop || Join
-  |> noop || Comm || noop
-  |> noop || Join
+  perf (\_ -> getLine) *** perf (\_ -> return 42) >>>~
+  (perf (\s -> return (s, s)) >>> Fork) *** noop  >>>~
+  -- (noop *** Comm) *** noop >>>
+  -- Perm AssocR >>>
+  -- noop *** Join
+  noop *** Comm *** noop >>>
+  noop *** Join
