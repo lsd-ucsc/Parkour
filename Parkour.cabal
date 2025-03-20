@@ -37,4 +37,5 @@ executable Parkour-test
     main-is:          Main.hs
     build-depends:
         base ^>=4.17.2.1,
+        time ^>=1.12.2,
         Parkour

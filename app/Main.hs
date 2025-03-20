@@ -8,15 +8,11 @@ import Control.Arrow (Kleisli (..))
 import Control.Concurrent.Async.Lifted
 import Control.CSD.Network
 import Control.CSD.CSD
+import Data.Time
 import System.Environment
 
 -------------------------------------------------------------------------------
 -- Example 1: Distributed Compilation Service
-
-priceOf :: String -> Int
-priceOf "TaPL" = 80
-priceOf "PFPL" = 100
-priceOf _      = 999_999_999
 
 type Path = String
 type Code = String
@@ -61,20 +57,60 @@ distComp =
 -- Example 2: Bookstore
 
 data Buyer
-data Buyer2
 data Seller
-data Seller2
 
-loopN :: Int -> CSD f a a -> CSD f a a
-loopN n f
-  | n == 0 = Perm Id
-  | n > 0 = f >>> loopN (n - 1) f
-  | n < 0 = f >>> loopN (n + 1) f
+getTitle :: () -> IO ((), String)
+getTitle _ = do
+  putStrLn "Type in the book you want to buy:"
+  s <- getLine
+  return ((), s)
 
-priceOf' :: String -> Either String Int
-priceOf' "HoTT" = Right 123
-priceOf' "MLTT" = Right 456
-priceOf' s      = Left s
+getPrice :: (String, ()) -> IO (Int, ())
+getPrice (s, _) = do
+  putStrLn ("The buyer wants to buy " ++ s)
+  putStrLn "What's the price of the book?"
+  p <- read <$> getLine
+  return (p, ())
+
+decide :: ((), Int) -> IO (Either () ())
+decide (_, p) = do
+  putStrLn "What's your budget?"
+  b <- read <$> getLine
+  if b >= p
+  then return (Right ())
+  else return (Left ())
+
+getDate :: () -> IO (Day, ())
+getDate _ = do
+  putStrLn "What's the delivery date of the book?"
+  d <- read <$> getLine
+  return (d, ())
+
+bookstore :: CSD (Kleisli IO) (() @ Buyer * () @ Seller) (Either () Day @ Buyer * () @ Seller)
+bookstore =
+  perfM getTitle *** noop >>>~
+  fork *** noop           >>>~
+  noop *** comm *** noop  >>>~
+  noop *** join           >>>~
+  noop *** perfM getPrice >>>~
+  noop *** fork           >>>~
+  noop *** comm *** noop  >>>~
+  join *** noop           >>>~
+  perfM decide *** noop   >>>~
+  split *** noop          >>>~
+  distribIn               >>>~
+  case1 ||| case2         >>>~
+  distribOut              >>>~
+  merge *** noop
+  where
+    case1 = pure (\_ -> ()) *** noop
+    case2 =
+      noop *** perfM getDate >>>~
+      noop *** fork          >>>~
+      noop *** comm *** noop >>>~
+      join *** noop          >>>~
+      pure (\(_,d) -> d) *** noop
+
 
 -- Example 3: Conditional Choreography (with granular knowledge of choice)
 --
@@ -120,63 +156,23 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-  --   ["bookstore1"] -> do
-  --     s1 <- async (return ())
-  --     s2 <- async (return ())
-  --     (s1', s2') <- runCSD runKleisli (bookstore1 @Buyer @Seller) (s1, s2)
-  --     mapM_ wait [s1', s2']
-  --   ["bookstore1", "buyer"] -> do
-  --     s1 <- async (return ())
-  --     let prog = project @Buyer runKleisli (bookstore1 @Buyer @Seller) (s1, absent)
-  --     (s1, _) <- runHttpDebug config 40001 prog
-  --     mapM_ wait [s1]
-  --   ["bookstore1", "seller"] -> do
-  --     s2 <- async (return ())
-  --     let prog = project @Seller runKleisli (bookstore1 @Buyer @Seller) (absent, s2)
-  --     (_, s2) <- runHttpDebug config 40002 prog
-  --     mapM_ wait [s2]
-  --   ["bookstore2"] -> do
-  --     s1 <- async (return ())
-  --     s2 <- async (return ())
-  --     s3 <- async (return ())
-  --     ((s1, s4), (s2, s3)) <- runCSD runKleisli bookstore2 (s1, (s2, s3))
-  --     mapM_ wait [s1, s2, s3, s4]
-  --   ["bookstore2", "buyer"] -> do
-  --     s1 <- async (return ())
-  --     let prog = project @Buyer runKleisli bookstore2 (s1, (absent, absent))
-  --     ((s1, _), (_, _)) <- runHttpDebug config 40001 prog
-  --     mapM_ wait [s1]
-  --   ["bookstore2", "seller"] -> do
-  --     s3 <- async (return ())
-  --     let prog = project @Seller runKleisli bookstore2 (absent, (absent, s3))
-  --     ((_, s4), (_, s3)) <- runHttp config 40002 prog
-  --     mapM_ wait [s3, s4]
-  --   ["bookstore2", "buyer2"] -> do
-  --     s2 <- async (return ())
-  --     let prog = project @Buyer2 runKleisli bookstore2 (absent, (s2, absent))
-  --     ((_, _), (s2, _)) <- runHttp config 40003 prog
-  --     mapM_ wait [s2]
-  --   ["bookstore3"] -> do
-  --     s1 <- async (return ())
-  --     s2 <- async (return ())
-  --     s3 <- async (return ())
-  --     (s1', (s2', s3')) <- runCSD runKleisli bookstore3 (s1, (s2, s3))
-  --     mapM_ wait [s1', s2', s3']
-  --   ["bookstore3", "buyer"] -> do
-  --     s1 <- async (return ())
-  --     let prog = project @Buyer runKleisli bookstore3 (s1, (absent, absent))
-  --     (s1', (_, _)) <- runHttp config 40001 prog
-  --     mapM_ wait [s1']
-  --   ["bookstore3", "seller"] -> do
-  --     s2 <- async (return ())
-  --     let prog = project @Seller runKleisli bookstore3 (absent, (s2, absent))
-  --     (_, (s2', _)) <- runHttp config 40002 prog
-  --     mapM_ wait [s2']
-  --   ["bookstore3", "seller2"] -> do
-  --     s3 <- async (return ())
-  --     let prog = project @Seller2 runKleisli bookstore3 (absent, (absent, s3))
-  --     (_, (_, s3')) <- runHttp config 40004 prog
-  --     mapM_ wait [s3']
+    ["bookstore"] -> do
+      s1 <- async (return ())
+      s2 <- async (return ())
+      (s1, s2) <- runCSD runKleisli bookstore (s1, s2)
+      s1 <- async (wait s1 >>= print)
+      mapM_ wait [s1, s2]
+    ["bookstore", "buyer"] -> do
+        s1 <- async (return ())
+        let prog = project @Buyer runKleisli bookstore (s1, absent)
+        (s1, _) <- runHttpDebug config 40001 prog
+        s1 <- async (wait s1 >>= print)
+        mapM_ wait [s1]
+    ["bookstore", "seller"] -> do
+        s2 <- async (return ())
+        let prog = project @Seller runKleisli bookstore (absent, s2)
+        (_, s2) <- runHttpDebug config 40002 prog
+        mapM_ wait [s2]
     ["distComp"] -> do
       s1 <- async (return "path1")
       s2 <- async (return ())
@@ -207,9 +203,7 @@ main = do
     config :: HttpConfig
     config = mkHttpConfig
       [ ("Buyer", ("localhost", 40001)),
-        ("Seller", ("localhost", 40002)),
-        ("Buyer2", ("localhost", 40003)),
-        ("Seller2", ("localhost", 40004))
+        ("Seller", ("localhost", 40002))
       ]
 
     config2 :: HttpConfig

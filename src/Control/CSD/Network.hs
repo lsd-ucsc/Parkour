@@ -170,7 +170,7 @@ runHttpTop cfg self debug m = do
 
   -- wait for pending sends to finish   TODO: collect these sends and wait on them
   -- also give the server thread some time to send back response (this probabaly can't be fixed)
-  threadDelay 10000_000_000
+  threadDelay 10_000_000
   return a
 
   -- TODO: kill the server thread?

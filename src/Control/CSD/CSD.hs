@@ -258,10 +258,10 @@ project1 _ (Split @s) (_ :: Proxy t)
     i <- inc
     case xy' of
       (Left a) -> do
-        lift $ bcast i False
+        lift $ bcast i True
         Left <$> async (return a)
       (Right b) -> do
-        lift $ bcast i True
+        lift $ bcast i False
         Right <$> async (return b)
   | otherwise = \_ -> do
     i <- inc
