@@ -73,6 +73,12 @@ infixr 3 |||
 perf :: (Typeable l) => f x y -> CSD f (x @ l) (y @ l)
 perf = Perf
 
+perfM :: (Typeable l) => (x -> m y) -> CSD (Kleisli m) (x @ l) (y @ l)
+perfM m = perf (Kleisli m)
+
+pure :: (Typeable l, Arrow f) => (x -> y) -> CSD f (x @ l) (y @ l)
+pure f = perf (arr f)
+
 comm :: (Typeable l, Typeable l', Show x, Read x) => CSD f (x @ l) (x @ l')
 comm = Comm
 
@@ -88,8 +94,17 @@ fork = Fork
 join :: (Typeable l) => CSD f (x @ l * y @ l) ((x, y) @ l)
 join = Join
 
-perm :: Perm a b -> CSD f a b
-perm = Perm
+id :: forall a f. CSD f a a
+id  = Perm Id
+
+swap :: CSD f (a * b) (b * a)
+swap = Perm Swap
+
+assocL :: CSD f (a * (b * c)) ((a * b) * c)
+assocL = Perm AssocL
+
+assocR :: CSD f ((a * b) * c) (a * (b * c))
+assocR = Perm AssocR
 
 split :: (Typeable l) => CSD f (Either x y @ l) (x @ l + y @ l)
 split = Split
@@ -97,20 +112,14 @@ split = Split
 merge :: (Typeable l) => CSD f (x @ l + y @ l) (Either x y @ l)
 merge = Merge
 
-distrib :: Distrib a b -> CSD f a b
-distrib = Distrib
+distribIn :: CSD f ((a + b) * c) (a * c + b * c)
+distribIn = Distrib In
+
+distribOut :: CSD f (a * c + b * c) ((a + b) * c)
+distribOut = Distrib Out
 
 (|||) :: CSD f a c -> CSD f b d -> CSD f (a + b) (c + d)
 f ||| g = Branch f g
-
-perfM :: (Typeable l) => (x -> m y) -> CSD (Kleisli m) (x @ l) (y @ l)
-perfM m = perf (Kleisli m)
-
-pure :: (Typeable l, Arrow f) => (x -> y) -> CSD f (x @ l) (y @ l)
-pure f = perf (arr f)
-
-id :: forall a f. CSD f a a
-id  = Perm Id
 
 -- this version works nicer with >>>~
 noop :: CSD f (x @ l) (x @ l)
