@@ -6,12 +6,12 @@
 
 module Control.CSD.CSD where
 
-import Prelude hiding ((||))
+import Prelude hiding ((||), pure, id)
 import Data.Kind
 import Data.Proxy
 import Data.Typeable
 import Control.Concurrent.Async.Lifted
-import Control.Arrow (Kleisli(..))
+import Control.Arrow hiding ((>>>), (***), (|||))
 import Control.CSD.Network
 import Control.Monad.State hiding (join)
 
@@ -39,40 +39,42 @@ eqLoc = reify @l == reify @l'
 -- * CSDs
 
 data Perm a b where
-  Id        :: Perm a a
-  Swap      :: Perm (a * b) (b * a)
-  AssocL    :: Perm (a * (b * c)) ((a * b) * c)
-  AssocR    :: Perm ((a * b) * c) (a * (b * c))
-  Distrib   :: Perm ((a + b) * c) (a * c + b * c)
-  Undistrib :: Perm (a * c + b * c) ((a + b) * c)
+  Id     :: Perm a a
+  Swap   :: Perm (a * b) (b * a)
+  AssocL :: Perm (a * (b * c)) ((a * b) * c)
+  AssocR :: Perm ((a * b) * c) (a * (b * c))
+
+data Distrib a b where
+  In  :: Distrib ((a + b) * c) (a * c + b * c)
+  Out :: Distrib (a * c + b * c) ((a + b) * c)
 
 data CSD f a b where
+  -- Sequential Compositions
   Perf :: (Typeable l) => f x y -> CSD f (x @ l) (y @ l)
   Comm :: (Typeable l, Typeable l', Show x, Read x) => CSD f (x @ l) (x @ l')
   Seq  :: CSD f a b -> CSD f b c -> CSD f a c
+  -- Parallel Compositions
   Par  :: CSD f a c -> CSD f b d -> CSD f (a * b) (c * d)
   Fork :: (Typeable l) => CSD f ((x, y) @ l) (x @ l * y @ l)
   Join :: (Typeable l) => CSD f (x @ l * y @ l) ((x, y) @ l)
   Perm :: Perm a b -> CSD f a b
   -- Conditionals
-  Split    :: (Typeable l) => CSD f (Either x y @ l) (x @ l + y @ l)
-  Coalesce :: (Typeable l) => CSD f (x @ l + y @ l) (Either x y @ l)
-  Branch   :: CSD f a c -> CSD f b d -> CSD f (a + b) (c + d)
+  Split   :: (Typeable l) => CSD f (Either x y @ l) (x @ l + y @ l)
+  Merge   :: (Typeable l) => CSD f (x @ l + y @ l) (Either x y @ l)
+  Branch  :: CSD f a c -> CSD f b d -> CSD f (a + b) (c + d)
+  Distrib :: Distrib a b -> CSD f a b
 
--- Derived operations and syntax sugar
-
--- perform an monadic action
-perf :: (Typeable l) => (x -> m y) -> CSD (Kleisli m) (x @ l) (y @ l)
-perf m = Perf (Kleisli m)
-
--- this version works nicer with |>~
-noop :: CSD f (a @ l) (a @ l)
-noop = Perm Id
-
+-- Syntax sugar and derived operations
 infixr 1 >>>
 infixr 1 >>>~
 infixr 3 ***
 infixr 3 |||
+
+perf :: (Typeable l) => f x y -> CSD f (x @ l) (y @ l)
+perf = Perf
+
+comm :: (Typeable l, Typeable l', Show x, Read x) => CSD f (x @ l) (x @ l')
+comm = Comm
 
 (>>>) :: CSD f a b -> CSD f b c -> CSD f a c
 f >>> g = Seq f g
@@ -80,12 +82,43 @@ f >>> g = Seq f g
 (***) :: CSD f a c -> CSD f b d -> CSD f (a * b) (c * d)
 f *** g = Par f g
 
-(>>>~) :: (Normalizable b, Normalizable b', Norm b ~ Norm b') =>
-        CSD f a b -> CSD f b' c -> CSD f a c
-f >>>~ g = f >>> toNorm >>> fromNorm >>> g
+fork :: (Typeable l) => CSD f ((x, y) @ l) (x @ l * y @ l)
+fork = Fork
+
+join :: (Typeable l) => CSD f (x @ l * y @ l) ((x, y) @ l)
+join = Join
+
+perm :: Perm a b -> CSD f a b
+perm = Perm
+
+split :: (Typeable l) => CSD f (Either x y @ l) (x @ l + y @ l)
+split = Split
+
+merge :: (Typeable l) => CSD f (x @ l + y @ l) (Either x y @ l)
+merge = Merge
+
+distrib :: Distrib a b -> CSD f a b
+distrib = Distrib
 
 (|||) :: CSD f a c -> CSD f b d -> CSD f (a + b) (c + d)
 f ||| g = Branch f g
+
+perfM :: (Typeable l) => (x -> m y) -> CSD (Kleisli m) (x @ l) (y @ l)
+perfM m = perf (Kleisli m)
+
+pure :: (Typeable l, Arrow f) => (x -> y) -> CSD f (x @ l) (y @ l)
+pure f = perf (arr f)
+
+id :: forall a f. CSD f a a
+id  = Perm Id
+
+-- this version works nicer with >>>~
+noop :: CSD f (x @ l) (x @ l)
+noop = Perm Id
+
+(>>>~) :: (Normalizable b, Normalizable b', Norm b ~ Norm b') =>
+        CSD f a b -> CSD f b' c -> CSD f a c
+f >>>~ g = f >>> toNorm >>> fromNorm >>> g
 
 -- right-associative normal forms for configurations
 type family Norm a where
@@ -136,8 +169,10 @@ runCSDPerm Id = \a -> return a
 runCSDPerm Swap = \(a, b) -> return (b, a)
 runCSDPerm AssocL = \(a, (b, c)) -> return ((a, b), c)
 runCSDPerm AssocR = \((a, b), c) -> return (a, (b, c))
-runCSDPerm Distrib = \(ab, c) -> return (either (Left . (,c)) (Right . (,c)) ab)
-runCSDPerm Undistrib = \acbc -> return (either (\(a, c) -> (Left a, c)) (\(b, c) -> (Right b, c)) acbc)
+
+runCSDDistrib :: Distrib a b -> CentralF a b
+runCSDDistrib In = \(ab, c) -> return (either (Left . (,c)) (Right . (,c)) ab)
+runCSDDistrib Out = \acbc -> return (either (\(a, c) -> (Left a, c)) (\(b, c) -> (Right b, c)) acbc)
 
 runCSD :: (forall x y. f x y -> x -> IO y) -> CSD f a b -> CentralF a b
 runCSD hdl (Perf act) = \x -> async (wait x >>= hdl act)
@@ -153,12 +188,13 @@ runCSD _ Split = \xy -> do
   case xy' of
     (Left x)  -> Left <$> async (return x)
     (Right y) -> Right <$> async (return y)
-runCSD _ Coalesce = \case
+runCSD _ Merge = \case
   Left x -> async (Left <$> wait x)
   Right y -> async (Right <$> wait y)
 runCSD hdl (Branch f g) = \case
   (Left a)  -> Left <$> runCSD hdl f a
   (Right b) -> Right <$> runCSD hdl g b
+runCSD _ (Distrib d) = runCSDDistrib d
 
 -- ** Distributed Semantics
 
@@ -179,8 +215,10 @@ project1Perm Id _ = \a -> return a
 project1Perm Swap _ = \(a, b) -> return (b, a)
 project1Perm AssocL _ = \(a, (b, c)) -> return ((a, b), c)
 project1Perm AssocR _ = \((a, b), c) -> return (a, (b, c))
-project1Perm Distrib _ = \(ab, c) -> return (either (Left . (,c)) (Right . (,c)) ab)
-project1Perm Undistrib _ = \acbc -> return (either (\(a, c) -> (Left a, c)) (\(b, c) -> (Right b, c)) acbc)
+
+project1Distrib :: Distrib a b -> ProjectedF a b
+project1Distrib In _ = \(ab, c) -> return (either (Left . (,c)) (Right . (,c)) ab)
+project1Distrib Out _ = \acbc -> return (either (\(a, c) -> (Left a, c)) (\(b, c) -> (Right b, c)) acbc)
 
 project1 :: (forall x y. f x y -> x -> IO y) -> CSD f a b -> ProjectedF a b
 project1 hdl (Perf @l act) (_ :: Proxy t)
@@ -193,8 +231,7 @@ project1 _ (Comm @s @r) (_ :: Proxy t)
     lift $ send (reify @r) i x -- there's dangling Async there
     return absent
   | reify @t == reify @r = \_ -> do
-    i <- inc
-    lift $ recv i
+    i <- inc; lift $ recv i
   | otherwise = \_ -> inc >> return absent
 project1 hdl (Seq f g) t = \a -> project1 hdl f t a >>= project1 hdl g t
 project1 hdl (Par f g) t = \(a, b) -> (,) <$> project1 hdl f t a <*> project1 hdl g t b
@@ -224,7 +261,7 @@ project1 _ (Split @s) (_ :: Proxy t)
     if c'
     then return (Left absent)
     else return (Right absent)
-project1 _ (Coalesce @l) (_ :: Proxy t)
+project1 _ (Merge @l) (_ :: Proxy t)
   | reify @t == reify @l = \case
     (Left a) -> return (Left <$> a)
     (Right b) -> return (Right <$> b)
@@ -232,6 +269,7 @@ project1 _ (Coalesce @l) (_ :: Proxy t)
 project1 hdl (Branch f g) (t :: Proxy t) = \case
     (Left a)  -> Left <$> project1 hdl f t a
     (Right b) -> Right <$> project1 hdl g t b
+project1 _ (Distrib d) t = project1Distrib d t
 
 project :: forall (l :: Type) f a b. (Typeable l) =>
            (forall a b. f a b -> a -> IO b) -> CSD f a b -> Asynced a -> Http (Asynced b)
@@ -245,10 +283,10 @@ project hdl c a =
 foo :: (Typeable l, Typeable l') =>
        CSD (Kleisli IO) (() @ l * () @ l') (String @ l * (String, Int) @ l')
 foo =
-  perf (\_ -> getLine) *** perf (\_ -> return 42) >>>~
-  (perf (\s -> return (s, s)) >>> Fork) *** noop  >>>~
+  perfM (\_ -> getLine) *** pure (\_ -> 42) >>>~
+  (pure (\s -> (s, s)) >>> Fork) *** noop >>>~
   -- (noop *** Comm) *** noop >>>
   -- Perm AssocR >>>
   -- noop *** Join
-  noop *** Comm *** noop >>>
+  noop *** Comm *** noop >>>~
   noop *** Join

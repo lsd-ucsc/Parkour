@@ -3,13 +3,11 @@
 
 module Main where
 
-import Prelude hiding ((***))
+import Prelude hiding ((||), pure, id)
 import Control.Arrow (Kleisli (..))
 import Control.Concurrent.Async.Lifted
 import Control.CSD.Network
 import Control.CSD.CSD
-import Data.Proxy
-import Data.Typeable
 import System.Environment
 
 -------------------------------------------------------------------------------
@@ -45,19 +43,19 @@ distComp :: (Show Code, Read Code, Show Obj, Read Obj, Show Exe, Read Exe) => CS
   (Obj  @ LibRepo * () @ Server * () @ Server * Exe @ ExeRepo)
 distComp =
   -- repositories prepare and send source code
-  perf getSrc *** (perf (\x -> pure (x, x)) >>> Fork) *** perf getSrc                             >>>~
-  (perf (\x -> pure ((), x)) >>> Fork) *** noop *** noop *** (perf (\x -> pure (x, ())) >>> Fork) >>>~
-  noop *** Comm *** noop *** noop *** Comm *** noop                                               >>>~
-  noop *** (Join >>> perf (\(x, _) -> pure x)) *** (Join >>> perf (\(_, x) -> pure x)) *** noop   >>>~
+  perfM getSrc *** (pure (\x -> (x,x)) >>> Fork) *** perfM getSrc                     >>>~
+  (pure (\x -> ((),x)) >>> Fork) *** noop *** noop *** (pure (\x -> (x,())) >>> Fork) >>>~
+  noop *** Comm *** noop *** noop *** Comm *** noop                                   >>>~
+  noop *** (Join >>> pure (\(x, _) -> x)) *** (Join >>> pure (\(_,x) -> x)) *** noop  >>>~
   -- server compiles source code
-  noop *** perf compile *** perf compile *** noop                                                 >>>~
-  noop *** (perf (\x -> pure (x, x)) >>> Fork) *** noop *** noop                                  >>>~
-  noop *** noop *** Join *** noop                                                                 >>>~
-  noop *** noop *** perf link *** noop                                                            >>>~
+  noop *** perfM compile *** perfM compile *** noop                                   >>>~
+  noop *** (pure (\x -> (x,x)) >>> Fork) *** noop *** noop                            >>>~
+  noop *** noop *** Join *** noop                                                     >>>~
+  noop *** noop *** perfM link *** noop                                               >>>~
   -- server sends back the results
-  noop *** (perf (\x -> pure (x, ())) >>> Fork) *** (perf (\x -> pure ((), x)) >>> Fork) *** noop >>>~
-  noop *** Comm *** noop *** noop *** Comm *** noop                                               >>>~
-  (Join >>> perf (\(_, x) -> pure x)) *** noop *** noop *** (Join >>> perf (\(x, _) -> pure x))
+  noop *** (pure (\x -> (x,())) >>> Fork) *** (pure (\x -> ((),x)) >>> Fork) *** noop >>>~
+  noop *** Comm *** noop *** noop *** Comm *** noop                                   >>>~
+  (Join >>> pure (\(_,x) -> x)) *** noop *** noop *** (Join >>> pure (\(x,_) -> x))
 
 -------------------------------------------------------------------------------
 -- Example 2: Bookstore
