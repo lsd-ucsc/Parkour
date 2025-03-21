@@ -279,8 +279,8 @@ project1 hdl (Branch f g) (t :: Proxy t) = \case
     (Right b) -> Right <$> project1 hdl g t b
 project1 _ (Distrib d) t = project1Distrib d t
 
-project :: forall (l :: Type) f a b. (Typeable l) =>
-           (forall a b. f a b -> a -> IO b) -> CSD f a b -> Asynced a -> Http (Asynced b)
+project :: forall (l :: Type) f m a b. (Typeable l, Network m, MonadIO m) =>
+           (forall a b. f a b -> a -> IO b) -> CSD f a b -> Asynced a -> m (Asynced b)
 project hdl c a =
   let c' = project1 hdl c (Proxy :: Proxy l)
   in evalStateT (c' a) 0
