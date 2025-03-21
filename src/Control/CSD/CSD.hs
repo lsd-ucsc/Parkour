@@ -207,8 +207,7 @@ runCSD _ (Distrib d) = runCSDDistrib d
 
 -- ** Distributed Semantics
 
-type ProjectedF a b =
-  forall (t :: Type). (Typeable t) => Proxy t -> Asynced a -> StateT Int Http (Asynced b)
+type ProjectedF a b = forall (t :: Type) m. (Typeable t, Network m, MonadIO m) => Proxy t -> Asynced a -> StateT Int m (Asynced b)
 
 absent :: Async a
 absent = error "Trying to access a value that is elsewhere."
