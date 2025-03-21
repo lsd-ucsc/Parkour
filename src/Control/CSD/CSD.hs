@@ -230,29 +230,29 @@ project1Distrib Out _ = \acbc -> return (either (\(a, c) -> (Left a, c)) (\(b, c
 
 project1 :: (forall x y. f x y -> x -> IO y) -> CSD f a b -> ProjectedF a b
 project1 hdl (Perf @l act) (_ :: Proxy t)
-  | reify @l == reify @t = \x -> async (wait x >>= hdl act)
+  | eqLoc @l @t = \x -> async (wait x >>= hdl act)
   | otherwise = \_ -> return absent
 project1 _ (Comm @s @r) (_ :: Proxy t)
-  | reify @s == reify @r = return
-  | reify @t == reify @s = \x -> do
+  | eqLoc @s @r = return
+  | eqLoc @t @s = \x -> do
     i <- inc
     lift $ send (reify @r) i x -- there's dangling Async there
     return absent
-  | reify @t == reify @r = \_ -> do
+  | eqLoc @t @r = \_ -> do
     i <- inc; lift $ recv i
   | otherwise = \_ -> inc >> return absent
 project1 hdl (Seq f g) t = \a -> project1 hdl f t a >>= project1 hdl g t
 project1 hdl (Par f g) t = \(a, b) -> (,) <$> project1 hdl f t a <*> project1 hdl g t b
 project1 _ (Fork @l) (_ :: Proxy t)
-  | reify @l == reify @t = \xy -> (,) <$> async (fst <$> wait xy) <*> async (snd <$> wait xy)
+  | eqLoc @l @t = \xy -> (,) <$> async (fst <$> wait xy) <*> async (snd <$> wait xy)
   | otherwise = \_ -> return (absent, absent)
 project1 _ (Join @l) (_ :: Proxy t)
-  | reify @l == reify @t = \(x, y) -> async ((,) <$> wait x <*> wait y)
+  | eqLoc @l @t = \(x, y) -> async ((,) <$> wait x <*> wait y)
   | otherwise = \_ -> return absent
 project1 _ (Perm p) t = project1Perm p t
 -- conditionals
 project1 _ (Split @s) (_ :: Proxy t)
-  | reify @t == reify @s = \xy -> do
+  | eqLoc @s @t = \xy -> do
     xy' <- wait xy
     i <- inc
     case xy' of
@@ -270,7 +270,7 @@ project1 _ (Split @s) (_ :: Proxy t)
     then return (Left absent)
     else return (Right absent)
 project1 _ (Merge @l) (_ :: Proxy t)
-  | reify @t == reify @l = \case
+  | eqLoc @l @t = \case
     (Left a) -> return (Left <$> a)
     (Right b) -> return (Right <$> b)
   | otherwise = \_ -> return absent
