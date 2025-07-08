@@ -6,6 +6,7 @@ module Control.CSD.Network where
 
 import Control.Concurrent
 import Control.Concurrent.Async.Lifted
+import Control.Monad (when, void)
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Data.HashMap.Strict (HashMap, (!))
@@ -13,7 +14,7 @@ import Data.HashMap.Strict qualified as HM
 import Data.Proxy
 import Network.HTTP.Client qualified as Http.Client
 import Network.Wai.Handler.Warp (run)
-import Servant.API
+import Servant.API hiding (Host)
 import Servant.Client (BaseUrl(..), ClientM, client, mkClientEnv, runClientM, Scheme(Http))
 import Servant.Server (Server, Handler, serve)
 

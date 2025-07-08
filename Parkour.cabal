@@ -18,24 +18,26 @@ library
         Control.Concurrent.Async.Lifted
         Control.CSD.Network
         Control.CSD.CSD
+        Control.SArrow
     build-depends:
-        async                ^>= 2.2.5,
-        base                 ^>= 4.17.2.1,
-        http-client          ^>= 0.7.15,
-        mtl                  ^>= 2.2.2,
-        servant              ^>= 0.19.1,
-        servant-client       ^>= 0.19,
-        servant-server       ^>= 0.19.2,
-        transformers         ^>= 0.5.6.2,
-        unordered-containers ^>= 0.2.19.1,
-        warp                 ^>= 3.3.25,
-
+      async >= 2.2.5 && < 2.3,
+      base >= 4.18.3 && < 4.19,
+      mtl >= 2.3.1 && < 2.4,
+      transformers >= 0.6.1 && < 0.7,
+      http-client >= 0.7.19 && < 0.8,
+      time >= 1.12.2 && < 1.13,
+      servant >= 0.20.3 && < 0.21,
+      unordered-containers >= 0.2.20 && < 0.3,
+      servant-client >= 0.20.3 && < 0.21,
+      servant-server >= 0.20.3 && < 0.21,
+      warp >= 3.4.8 && < 3.5,
+      
 executable Parkour-test
     import:           warnings
     default-language: GHC2021
     hs-source-dirs:   app
     main-is:          Main.hs
     build-depends:
-        base ^>=4.17.2.1,
-        time ^>=1.12.2,
-        Parkour
+        base,
+        time,
+        Parkour,
