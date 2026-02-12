@@ -3,6 +3,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoStarIsType #-}
 {-# LANGUAGE LinearTypes #-}
+{-# LANGUAGE UnicodeSyntax #-}
 
 module SepArrow where
 
@@ -15,50 +16,54 @@ infixr 3 ****
 infixr 2 *
 infix  3 @
 
--- TODO: see if using singletons can make this simpler
--- reference: https://discourse.haskell.org/t/small-rewrite-of-haschor-using-singletons/13237
-type Loc = Type
-type LocTm = String
+type Party = Type
+type PartyTm = String
 
-reify :: forall l. (Typeable l) => LocTm
-reify = show (typeRep (Proxy :: Proxy l))
+reify :: ∀ p. (Typeable p) => PartyTm
+reify = show (typeRep (Proxy :: Proxy p))
 
-eqLoc :: forall l l'. (Typeable l, Typeable l') => Bool
-eqLoc = reify @l == reify @l'
+eqParty :: ∀ p q. (Typeable p, Typeable q) => Bool
+eqParty = reify @p == reify @q
 
 data State where
-  At :: Type -> Loc -> State
+  At :: Type -> Party -> State
   Star :: State -> State -> State
 
 type a * b = Star a b
+type a @ p = a `At` p
 
-type a @ l = a `At` l
+type Perm a b = ∀ f. Interp f a %1 -> Interp f b
 
-type Perm a b = forall f. Interp f a %1 -> Interp f b
-
-type family Interp (f :: Type -> Loc -> Type) (a :: State) where
-  Interp f (At a l) = f a l
+type family Interp (f :: Type -> Party -> Type) (a :: State) where
+  Interp f (At a p) = f a p
   Interp f (Star a b) = (Interp f a, Interp f b)
 
 perm1 :: Perm a a
 perm1 = \a -> a
 
-perm2 :: Perm (a @ l1 * (b @ l2 * c @ l3)) ((b @ l2 * c @ l3) * a @ l1)
+perm2 :: Perm (a @ p * (b @ q * c @ r)) ((b @ q * c @ r) * a @ p)
 perm2 = \(a, (b, c)) -> ((b, c), a)
 
--- perm3 :: Perm (a @ l1 * b @ l2) (a @ l1)
+-- perm3 :: Perm (a @ p * b @ q) (a @ p)
 -- perm3 = \(a, b) -> a
 
--- perm4 :: Perm (Int @ l1 * Int @ l2) (Int @ l1 * Int @ l2)
+-- perm4 :: Perm (Int @ p * Int @ q) (Int @ p * Int @ q)
 -- perm4 = \(a, b) -> (a + 3, b)
 
+-- class Arrow (a :: Type -> Type -> Type) where
+--   arr   :: (b -> c) -> a b c
+--   (>>>) :: a b c -> a c d -> a b d
+--   (***) :: a b c -> a d e -> a (b, d) (c, e)
+
+-- TODO: add information flow to locations
+-- TODO: connection to graded/parameterized monads
 class SepArrow (a :: State -> State -> Type) where
-  locally :: (b -> c) -> a (b @ l) (c @ l)
+  locally :: (Typeable p) => (b -> c) -> a (b @ p) (c @ p)
   (>>>>)  :: a b c -> a c d -> a b d
   (****)  :: a b d -> a c e -> a (b * c) (d * e)
-  comm    :: a (b @ l1) (b @ l2)
-  fork    :: a ((b, c) @ l) (b @ l * c @ l)
-  join    :: a (b @ l * c @ l) ((b, c) @ l)
+  comm    :: (Typeable p, Typeable q) => a (b @ p) (b @ q)
+  fork    :: (Typeable p) => a ((b, c) @ p) (b @ p * c @ p)
+  join    :: (Typeable p) => a (b @ p * c @ p) ((b, c) @ p)
   perm    :: Perm b c -> a b c
 
 -- Derived combinators
@@ -69,10 +74,10 @@ noop = perm (\x -> x)
 assocR :: (SepArrow a) => a ((b * c) * d) (b * (c * d))
 assocR = perm (\((b, c), d) -> (b, (c, d)))
 
-forkL :: (SepArrow a) => a (b @ l) (b @ l * () @ l)
+forkL :: (SepArrow a, Typeable p) => a (b @ p) (b @ p * () @ p)
 forkL = locally (\b -> (b, ())) >>>> fork
 
-forkR :: (SepArrow a) => a (b @ l) (() @ l * b @ l)
+forkR :: (SepArrow a, Typeable p) => a (b @ p) (() @ p * b @ p)
 forkR = locally (\b -> ((), b)) >>>> fork
 
 ex1 :: (SepArrow a) => a (b * c) (f * g)
@@ -104,14 +109,14 @@ ex2 = (f *** g) >>> arr (\(x, y) -> x + y)
 -- And `arr` also makes writing interpreter hard because functions are uninspectable.
 -- Separation arrows prohibit this behavior and enforce one to specify how infomration flows
 
-ex3 :: (SepArrow a) => a (() @ l1 * () @ l2) (() @ l1 * Int @ l2)
+ex3 :: (SepArrow a, Typeable p, Typeable q) => a (() @ p * () @ q) (() @ p * Int @ q)
 ex3 =
-  (f **** g)
-    >>>> (forkR **** noop)
-    >>>> assocR
-    >>>> (noop **** (comm **** noop))
-    >>>> (noop **** join)
-    >>>> (noop **** locally (\(x, y) -> x + y))
+  (f **** g)                   >>>>
+  (forkR **** noop)            >>>>
+  assocR                       >>>>
+  (noop **** (comm **** noop)) >>>>
+  (noop **** join)             >>>>
+  (noop **** locally (\(x, y) -> x + y))
   where
     f :: a (() @ l1) (Int @ l1)
     f = undefined
@@ -125,26 +130,41 @@ ex3 =
 -- pritimives that manifest behaviors that previously were behind `arr`. If we strip away the
 -- additional type displicine, i.e., remove `Local` and treat * as regular products then each
 -- separation arrow corresponds to an arrow, which is evident by the following instance definition:
-instance (Arrow a) => SepArrow (ToSep a) where
-  locally f = ToSep (arr $ \(Forget a) -> Forget (f a))
-  (ToSep a) >>>> (ToSep b) = ToSep (a >>> b)
-  (ToSep a) **** (ToSep b) = ToSep (a *** b)
-  comm = ToSep (arr $ \(Forget a) -> Forget a)
-  fork = ToSep (arr $ \(Forget (a, b)) -> (Forget a, Forget b))
-  join = ToSep (arr $ \(Forget a, Forget b) -> Forget (a, b))
-  perm f = ToSep (arr _)
+-- instance (Arrow a) => SepArrow (ToSep a) where
+--   locally f = ToSep (arr $ \(Forget a) -> Forget (f a))
+--   (ToSep a) >>>> (ToSep b) = ToSep (a >>> b)
+--   (ToSep a) **** (ToSep b) = ToSep (a *** b)
+--   comm = ToSep (arr $ \(Forget a) -> Forget a)
+--   fork = ToSep (arr $ \(Forget (a, b)) -> (Forget a, Forget b))
+--   join = ToSep (arr $ \(Forget a, Forget b) -> Forget (a, b))
+--   perm f = ToSep (arr undefined)
 
-newtype ToSep a b c = ToSep (a (Interp Forget b) (Interp Forget c))
+-- newtype ToSep a b c = ToSep (a (Interp Forget b) (Interp Forget c))
 
-newtype Forget a (l :: Loc) = Forget a
+-- Forget :: a -> Forget a l
+-- newtype Forget a (l :: Loc) = Forget a
 
 -- Projection
 
-newtype Proj a t b c = Proj (a (Interp ProjF b) (Interp ProjF c))
+-- newtype Proj a t b c = Proj (a (Interp ProjF b) (Interp ProjF c))
 
-newtype ProjF a l = ProjF a
+-- newtype ProjF a l = ProjF a
 
-instance (Arrow a, Typeable t) => SepArrow (Proj a t) where
-  locally :: forall l b c. (b -> c) -> Proj a t (b @ l) (c @ l)
-  locally
-    | eqLoc @t @l = _
+-- SepArrow -> Target -> Arrow
+-- instance (SepArrow Target Arrow)
+-- instance (SepArrow s) => (Arrow (Proj s t))
+
+-- implementation SepArrow => implementation Arrow
+-- Prog SepArrow -> Prog Arrow
+
+-- (SepArrow a) => a b c -> Proj a t b c
+--
+-- foo :: (SepArrow s) => s b c
+-- alice :: Typeable alice
+--
+-- fooAlice :: (Arrow a) => a (Interp b) (Interp c)
+
+-- instance (Arrow a, Typeable t) => SepArrow (Proj a t) where
+--   locally :: forall l b c. (b -> c) -> Proj a t (b @ l) (c @ l)
+--   locally = undefined
+    -- | eqLoc @t @l = undefined
