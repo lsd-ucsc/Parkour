@@ -4,26 +4,24 @@
 {-# LANGUAGE NoStarIsType #-}
 {-# LANGUAGE LinearTypes #-}
 {-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE GADTs #-}
 
 module SepArrow where
 
 import Control.Arrow
+import Data.Void (absurd)
 import Data.Kind (Type)
-import Data.Typeable
+import Data.Type.Equality
+import Type.Reflection
+import Data.Singletons.Decide ((%~), Decision(..))
+import GHC.TypeLits.Singletons
 
 infixr 1 >>>>
 infixr 3 ****
 infixr 2 *
 infix  3 @
 
-type Party = Type
-type PartyTm = String
-
-reify :: ∀ p. (Typeable p) => PartyTm
-reify = show (typeRep (Proxy :: Proxy p))
-
-eqParty :: ∀ p q. (Typeable p, Typeable q) => Bool
-eqParty = reify @p == reify @q
+type Party = Symbol
 
 data State where
   At :: Type -> Party -> State
@@ -58,12 +56,12 @@ perm2 = \(a, (b, c)) -> ((b, c), a)
 -- TODO: add information flow to locations
 -- TODO: connection to graded/parameterized monads
 class SepArrow (a :: State -> State -> Type) where
-  locally :: (Typeable p) => (b -> c) -> a (b @ p) (c @ p)
+  locally :: (KnownSymbol p) => (b -> c) -> a (b @ p) (c @ p)
   (>>>>)  :: a b c -> a c d -> a b d
   (****)  :: a b d -> a c e -> a (b * c) (d * e)
-  comm    :: (Typeable p, Typeable q) => a (b @ p) (b @ q)
-  fork    :: (Typeable p) => a ((b, c) @ p) (b @ p * c @ p)
-  join    :: (Typeable p) => a (b @ p * c @ p) ((b, c) @ p)
+  comm    :: (KnownSymbol p, KnownSymbol q) => a (b @ p) (b @ q)
+  fork    :: (KnownSymbol p) => a ((b, c) @ p) (b @ p * c @ p)
+  join    :: (KnownSymbol p) => a (b @ p * c @ p) ((b, c) @ p)
   perm    :: Perm b c -> a b c
 
 -- Derived combinators
@@ -74,10 +72,10 @@ noop = perm (\x -> x)
 assocR :: (SepArrow a) => a ((b * c) * d) (b * (c * d))
 assocR = perm (\((b, c), d) -> (b, (c, d)))
 
-forkL :: (SepArrow a, Typeable p) => a (b @ p) (b @ p * () @ p)
+forkL :: (SepArrow a, KnownSymbol p) => a (b @ p) (b @ p * () @ p)
 forkL = locally (\b -> (b, ())) >>>> fork
 
-forkR :: (SepArrow a, Typeable p) => a (b @ p) (() @ p * b @ p)
+forkR :: (SepArrow a, KnownSymbol p) => a (b @ p) (() @ p * b @ p)
 forkR = locally (\b -> ((), b)) >>>> fork
 
 ex1 :: (SepArrow a) => a (b * c) (f * g)
@@ -109,7 +107,8 @@ ex2 = (f *** g) >>> arr (\(x, y) -> x + y)
 -- And `arr` also makes writing interpreter hard because functions are uninspectable.
 -- Separation arrows prohibit this behavior and enforce one to specify how infomration flows
 
-ex3 :: (SepArrow a, Typeable p, Typeable q) => a (() @ p * () @ q) (() @ p * Int @ q)
+ex3 :: ∀ p q a. (SepArrow a, KnownSymbol p, KnownSymbol q) =>
+    a (() @ p * () @ q) (() @ p * Int @ q)
 ex3 =
   (f **** g)                   >>>>
   (forkR **** noop)            >>>>
@@ -130,41 +129,45 @@ ex3 =
 -- pritimives that manifest behaviors that previously were behind `arr`. If we strip away the
 -- additional type displicine, i.e., remove `Local` and treat * as regular products then each
 -- separation arrow corresponds to an arrow, which is evident by the following instance definition:
--- instance (Arrow a) => SepArrow (ToSep a) where
---   locally f = ToSep (arr $ \(Forget a) -> Forget (f a))
---   (ToSep a) >>>> (ToSep b) = ToSep (a >>> b)
---   (ToSep a) **** (ToSep b) = ToSep (a *** b)
---   comm = ToSep (arr $ \(Forget a) -> Forget a)
---   fork = ToSep (arr $ \(Forget (a, b)) -> (Forget a, Forget b))
---   join = ToSep (arr $ \(Forget a, Forget b) -> Forget (a, b))
---   perm f = ToSep (arr undefined)
 
--- newtype ToSep a b c = ToSep (a (Interp Forget b) (Interp Forget c))
+newtype Flatten a p = Flatten a
 
--- Forget :: a -> Forget a l
--- newtype Forget a (l :: Loc) = Forget a
+newtype AsCentral a b c = AsCentral (a (Interp Flatten b) (Interp Flatten c))
+
+instance (Arrow a) => SepArrow (AsCentral a) where
+  locally f = AsCentral (arr $ \(Flatten a) -> Flatten (f a))
+  (AsCentral a) >>>> (AsCentral b) = AsCentral (a >>> b)
+  (AsCentral a) **** (AsCentral b) = AsCentral (a *** b)
+  comm = AsCentral (arr $ \(Flatten a) -> Flatten a)
+  fork = AsCentral (arr $ \(Flatten (a, b)) -> (Flatten a, Flatten b))
+  join = AsCentral (arr $ \(Flatten a, Flatten b) -> Flatten (a, b))
+  perm f = AsCentral (arr undefined)
 
 -- Projection
 
--- newtype Proj a t b c = Proj (a (Interp ProjF b) (Interp ProjF c))
+newtype Distrib t a p = Distrib ((t :~: p) -> a)
 
--- newtype ProjF a l = ProjF a
+newtype AsDistrib a b c = AsDistrib
+  (forall t. (Typeable t) => SSymbol t -> a (Interp (Distrib t) b) (Interp (Distrib t) c))
 
--- SepArrow -> Target -> Arrow
--- instance (SepArrow Target Arrow)
--- instance (SepArrow s) => (Arrow (Proj s t))
+instance (Arrow a) => SepArrow (AsDistrib a) where
+  locally :: ∀p b c. (KnownSymbol p) => (b -> c) -> AsDistrib a (b @ p) (c @ p)
+  locally f = AsDistrib $ \t -> case t %~ (SSymbol @p) of
+    (Proved pf) -> arr $ \(Distrib i) -> Distrib (\_ -> f (i pf))
+    (Disproved dpf) -> arr $ \_ -> Distrib (\pf -> absurd (dpf pf))
 
--- implementation SepArrow => implementation Arrow
--- Prog SepArrow -> Prog Arrow
+  (AsDistrib a) >>>> (AsDistrib b) = AsDistrib $ \t -> a t >>> b t
+  (AsDistrib a) **** (AsDistrib b) = AsDistrib $ \t -> a t *** b t
 
--- (SepArrow a) => a b c -> Proj a t b c
---
--- foo :: (SepArrow s) => s b c
--- alice :: Typeable alice
---
--- fooAlice :: (Arrow a) => a (Interp b) (Interp c)
+  fork :: ∀ p b c. (KnownSymbol p) => AsDistrib a ((b, c) @ p) (b @ p * c @ p)
+  fork = AsDistrib $ \t -> case t %~ (SSymbol @p) of
+    (Proved pf) -> arr $ \(Distrib i) -> (Distrib (\_ -> fst (i pf)), Distrib (\_ -> snd (i pf)))
+    (Disproved dpf) -> arr $ \_ ->
+        (Distrib (\pf -> absurd (dpf pf)), Distrib (\pf -> absurd (dpf pf)))
 
--- instance (Arrow a, Typeable t) => SepArrow (Proj a t) where
---   locally :: forall l b c. (b -> c) -> Proj a t (b @ l) (c @ l)
---   locally = undefined
-    -- | eqLoc @t @l = undefined
+  join :: ∀ p b c. (KnownSymbol p) => AsDistrib a (b @ p * c @ p) ((b, c) @ p)
+  join = AsDistrib $ \t -> case t %~ (SSymbol @p) of
+    (Proved pf) -> arr $ \(Distrib i1, Distrib i2) -> Distrib (\_ -> (i1 pf, i2 pf))
+    (Disproved dpf) -> arr $ \_ -> Distrib (\pf -> (absurd (dpf pf)))
+
+  perm f = AsDistrib (arr f)
