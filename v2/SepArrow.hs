@@ -31,6 +31,9 @@ type a @ p = a `At` p
 
 type Perm a b = ∀ f. Interp f a %1 -> Interp f b
 
+convert :: (a %1 -> b) -> a -> b
+convert f a = f a
+
 type family Interp (f :: Type -> Party -> Type) (a :: State) where
   Interp f (At a p) = f a p
   Interp f (Star a b) = (Interp f a, Interp f b)
@@ -140,7 +143,7 @@ instance (Arrow a) => SepArrow (AsCentral a) where
   comm = AsCentral (arr $ \(Flatten a) -> Flatten a)
   fork = AsCentral (arr $ \(Flatten (a, b)) -> (Flatten a, Flatten b))
   join = AsCentral (arr $ \(Flatten a, Flatten b) -> Flatten (a, b))
-  perm f = AsCentral (arr undefined)
+  perm f = AsCentral (arr (convert (f @Flatten)))
 
 -- Projection
 
@@ -188,4 +191,4 @@ instance (Arrow a, ArrowCom a) => SepArrow (AsDistrib a) where
     (Proved pf) -> arr $ \(Distrib i1, Distrib i2) -> Distrib (\_ -> (i1 pf, i2 pf))
     (Disproved dpf) -> arr $ \_ -> Distrib (\pf -> (absurd (dpf pf)))
 
-  perm f = AsDistrib (arr undefined)
+  perm f = AsDistrib $ \(_ :: SSymbol t) -> arr (convert (f @(Distrib t)))
