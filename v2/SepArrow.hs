@@ -12,7 +12,6 @@ import Control.Arrow
 import Data.Void (absurd)
 import Data.Kind (Type)
 import Data.Type.Equality
-import Type.Reflection
 import Data.Singletons.Decide ((%~), Decision(..))
 import GHC.TypeLits.Singletons
 
@@ -59,7 +58,7 @@ class SepArrow (a :: State -> State -> Type) where
   locally :: (KnownSymbol p) => (b -> c) -> a (b @ p) (c @ p)
   (>>>>)  :: a b c -> a c d -> a b d
   (****)  :: a b d -> a c e -> a (b * c) (d * e)
-  comm    :: (KnownSymbol p, KnownSymbol q) => a (b @ p) (b @ q)
+  comm    :: (KnownSymbol p, KnownSymbol q, Show b, Read b) => a (b @ p) (b @ q)
   fork    :: (KnownSymbol p) => a ((b, c) @ p) (b @ p * c @ p)
   join    :: (KnownSymbol p) => a (b @ p * c @ p) ((b, c) @ p)
   perm    :: Perm b c -> a b c
@@ -148,16 +147,35 @@ instance (Arrow a) => SepArrow (AsCentral a) where
 newtype Distrib t a p = Distrib ((t :~: p) -> a)
 
 newtype AsDistrib a b c = AsDistrib
-  (forall t. (Typeable t) => SSymbol t -> a (Interp (Distrib t) b) (Interp (Distrib t) c))
+  (forall t. (KnownSymbol t) => SSymbol t -> a (Interp (Distrib t) b) (Interp (Distrib t) c))
 
-instance (Arrow a) => SepArrow (AsDistrib a) where
-  locally :: ∀p b c. (KnownSymbol p) => (b -> c) -> AsDistrib a (b @ p) (c @ p)
+-- TODO: use a more practifical (de)serialization meachanism than Show and Read
+class (Arrow a) => ArrowCom a where
+  send :: (Show b) => SSymbol p -> a b ()
+  recv :: (Read b) => SSymbol q -> a () b
+
+instance (Arrow a, ArrowCom a) => SepArrow (AsDistrib a) where
+  locally :: ∀ p b c. (KnownSymbol p) => (b -> c) -> AsDistrib a (b @ p) (c @ p)
   locally f = AsDistrib $ \t -> case t %~ (SSymbol @p) of
     (Proved pf) -> arr $ \(Distrib i) -> Distrib (\_ -> f (i pf))
     (Disproved dpf) -> arr $ \_ -> Distrib (\pf -> absurd (dpf pf))
 
   (AsDistrib a) >>>> (AsDistrib b) = AsDistrib $ \t -> a t >>> b t
   (AsDistrib a) **** (AsDistrib b) = AsDistrib $ \t -> a t *** b t
+
+  comm :: ∀ p q b. (KnownSymbol p, KnownSymbol q, Show b, Read b) => AsDistrib a (b @ p) (b @ q)
+  comm = AsDistrib $ \t -> case (SSymbol @p) %~ (SSymbol @q) of
+    (Proved Refl) -> arr $ \i -> i
+    (Disproved dpf) -> case (t %~ (SSymbol @p), t %~ (SSymbol @q)) of
+      (Proved pf1, Proved pf2) -> absurd (dpf (trans (sym pf1) pf2))
+      (Proved pf1, Disproved dpf2) ->
+        unwrap pf1 >>> send (SSymbol @q) >>> arr (\_ -> Distrib (\pf2 -> absurd (dpf2 pf2)))
+      (Disproved _, Proved _) ->
+        arr (\_ -> ()) >>> recv (SSymbol @p) >>> arr (\i -> Distrib (\_ -> i))
+      (Disproved _, Disproved dpf2) -> arr $ \_ -> Distrib (\pf2 -> absurd (dpf2 pf2))
+    where
+      unwrap :: (t :~: p) -> a (Distrib t b p) b
+      unwrap pf = arr $ \(Distrib i) -> i pf
 
   fork :: ∀ p b c. (KnownSymbol p) => AsDistrib a ((b, c) @ p) (b @ p * c @ p)
   fork = AsDistrib $ \t -> case t %~ (SSymbol @p) of
@@ -170,4 +188,4 @@ instance (Arrow a) => SepArrow (AsDistrib a) where
     (Proved pf) -> arr $ \(Distrib i1, Distrib i2) -> Distrib (\_ -> (i1 pf, i2 pf))
     (Disproved dpf) -> arr $ \_ -> Distrib (\pf -> (absurd (dpf pf)))
 
-  perm f = AsDistrib (arr f)
+  perm f = AsDistrib (arr undefined)
